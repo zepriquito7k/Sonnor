@@ -11,7 +11,7 @@ import {
 import BackIcon from "../../icons/BackIcon";
 import MailIcon from "../../icons/MailIcon";
 
-import { fetchSignInMethodsForEmail } from "firebase/auth";
+import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../../firebase/config";
 import { isValidEmail } from "../../firebase/validate";
 
@@ -30,25 +30,32 @@ export default function ForgotPassword() {
       return;
     }
 
+    const cleanEmail = email.trim().toLowerCase();
+
     try {
-      // 2. Checar se o email existe no Firebase DE VERDADE
-      const clean = email.trim().toLowerCase();
-      const methods = await fetchSignInMethodsForEmail(auth, clean);
+      // 2. Tentar login com password falsa
+      await signInWithEmailAndPassword(
+        auth,
+        cleanEmail,
+        "__invalid_password__"
+      );
+    } catch (err: any) {
+      // EMAIL EXISTE (password errada)
+      if (err.code === "auth/wrong-password") {
+        router.push({
+          pathname: "/auth/verify-mail",
+          params: { email: cleanEmail },
+        });
+        return;
+      }
 
-      console.log("SIGN-IN METHODS:", methods);
-
-      // Se NÃO existir nenhum tipo de login associado → email não existe
-      if (methods.length === 0) {
+      // EMAIL NÃO EXISTE
+      if (err.code === "auth/user-not-found") {
         setErrorEmail(true);
         return;
       }
 
-      // 3. Se existir → avança para a verify-mail
-      router.push({
-        pathname: "/auth/verify-mail",
-        params: { email: clean },
-      });
-    } catch (err) {
+      // Outros erros
       console.log("FORGOT ERROR:", err);
       setErrorEmail(true);
     }
@@ -69,7 +76,6 @@ export default function ForgotPassword() {
       <Text style={styles.titleLarge}>Forget password?</Text>
       <Text style={styles.subtitle}>Enter your email</Text>
 
-      {/* INPUT */}
       <View
         style={[
           styles.inputContainer,

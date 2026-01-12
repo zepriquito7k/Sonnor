@@ -13,9 +13,9 @@ export default function WelcomeScreen() {
       <Text style={styles.logo}></Text>
 
       {/* TEXTO GRANDE */}
-      <Text style={styles.bigText}>Join about</Text>
-      <Text style={styles.bigText}>other</Text>
-      <Text style={styles.bigText}>artist</Text>
+      <Text style={styles.bigText}>Join music</Text>
+      <Text style={styles.bigText}>with the</Text>
+      <Text style={styles.bigText}>Sonnor</Text>
 
       {/* BOTÃO START */}
       <TouchableOpacity
@@ -35,7 +35,7 @@ export default function WelcomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#000",
+    backgroundColor: "#000000ff",
     paddingHorizontal: 25,
     paddingTop: 60,
   },

@@ -14,7 +14,6 @@ import {
 import AppleIcon from "../../icons/AppleIcon";
 import EyeClosed from "../../icons/EyeClosed";
 import EyeOpen from "../../icons/EyeOpen";
-import GoogleIcon from "../../icons/GoogleIcon";
 import LockIcon from "../../icons/LockIcon";
 import MailIcon from "../../icons/MailIcon";
 
@@ -129,13 +128,6 @@ export default function LoginScreen() {
         <Text style={styles.forgotPassText}>forgot the password?</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity
-        style={styles.newAccountContainer}
-        onPress={() => router.push("/auth/new-account")}
-      >
-        <Text style={styles.newAccountText}>new account</Text>
-      </TouchableOpacity>
-
       <TouchableOpacity style={styles.signInButton} onPress={handleLogin}>
         <Text style={styles.signInButtonText}>Sign In</Text>
       </TouchableOpacity>
@@ -150,28 +142,23 @@ export default function LoginScreen() {
         <View style={styles.iconContainerLeft}>
           <AppleIcon size={22} color="#fff" />
         </View>
+        <View style={styles.iconContainerRight} />
         <Text style={styles.providerText}>Continue with apple</Text>
-        <View style={styles.iconContainerRight} />
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.googleButton}>
-        <View style={styles.iconContainerLeft}>
-          <GoogleIcon size={22} />
-        </View>
-        <Text style={styles.providerText}>Continue with google</Text>
+      <TouchableOpacity
+        style={styles.newAccountButton}
+        onPress={() => router.push("/auth/new-account")}
+      >
         <View style={styles.iconContainerRight} />
+        <Text style={styles.providerText}>Create account</Text>
       </TouchableOpacity>
-
-      <Text style={styles.footerText}>
-        By continuing you confirm that you agree to our Terms of Service,
-        Privacy Policy and good behavior in chat with users
-      </Text>
     </View>
   );
 }
 
 ////////////////////////////////////////////////////////////
-// ESTILOS — IGUAL AO TEU
+// ESTILOS
 ////////////////////////////////////////////////////////////
 
 const styles = StyleSheet.create({
@@ -179,7 +166,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#000",
     paddingHorizontal: 25,
-    paddingTop: 80,
+    paddingTop: 70,
   },
 
   eyeButton: {
@@ -203,7 +190,7 @@ const styles = StyleSheet.create({
     fontSize: 60,
     color: "#fff",
     textAlign: "center",
-    marginBottom: 40,
+    marginBottom: 80,
   },
 
   titleLarge: {
@@ -236,21 +223,10 @@ const styles = StyleSheet.create({
     marginTop: 10,
     alignSelf: "flex-end",
     paddingRight: 15,
+    marginBottom: 20,
   },
 
   forgotPassText: {
-    color: "#838383",
-    fontSize: 13,
-  },
-
-  newAccountContainer: {
-    marginTop: 30,
-    marginBottom: -20,
-    alignSelf: "flex-end",
-    paddingRight: 20,
-  },
-
-  newAccountText: {
     color: "#838383",
     fontSize: 13,
   },
@@ -299,7 +275,7 @@ const styles = StyleSheet.create({
     position: "relative",
   },
 
-  googleButton: {
+  newAccountButton: {
     backgroundColor: "#111",
     borderRadius: 50,
     height: 55,
@@ -313,6 +289,7 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "600",
+    marginRight: 30,
   },
 
   footerText: {
