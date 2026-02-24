@@ -99,13 +99,18 @@ export default function Dynamicmenu() {
         </View>
 
         {/* PLAYER */}
+
         <View style={styles.playerRow}>
-          <Image
-            source={{
-              uri: "https://i.pinimg.com/736x/a9/d3/0d/a9d30dd1f3a897edb7821cf275ea08ab.jpg",
-            }}
-            style={styles.cover}
-          />
+          <TouchableOpacity
+            onPress={() => router.push("/main/components/fullmidia")}
+          >
+            <Image
+              source={{
+                uri: "https://i.pinimg.com/736x/17/c5/01/17c5017285bc72806ff99176f8d1051b.jpg",
+              }}
+              style={styles.cover}
+            />
+          </TouchableOpacity>
 
           <View style={styles.trackInfo}>
             <Text style={styles.trackTitle}>Music Name</Text>

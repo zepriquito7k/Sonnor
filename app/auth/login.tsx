@@ -1,302 +1,175 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
-import { login } from "../../firebase/auth";
-import { isValidEmail } from "../../firebase/validate";
-
 import {
+  Dimensions,
+  Image,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { login } from "../../firebase/auth";
+import { isValidEmail } from "../../firebase/validate";
 
-import AppleIcon from "../../icons/AppleIcon";
-import EyeClosed from "../../icons/EyeClosed";
-import EyeOpen from "../../icons/EyeOpen";
-import LockIcon from "../../icons/LockIcon";
-import MailIcon from "../../icons/MailIcon";
+const { width, height } = Dimensions.get("window");
 
 export default function LoginScreen() {
   const router = useRouter();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-
-  const [errorEmail, setErrorEmail] = useState(false);
-  const [errorPassword, setErrorPassword] = useState(false);
+  const [error, setError] = useState(false);
 
   async function handleLogin() {
-    setErrorEmail(false);
-    setErrorPassword(false);
+    setError(false);
 
-    // EMAIL INVÁLIDO
-    if (!isValidEmail(email)) {
-      setErrorEmail(true);
-      return;
-    }
-
-    // PASSWORD VAZIA
-    if (password.trim() === "") {
-      setErrorPassword(true);
+    if (!isValidEmail(email) || password.trim() === "") {
+      setError(true);
       return;
     }
 
     try {
       await login(email, password);
-      router.push("/main/home");
-    } catch (err: any) {
-      if (err.code === "auth/user-not-found") {
-        setErrorEmail(true);
-      } else if (err.code === "auth/invalid-credential") {
-        setErrorEmail(true);
-        setErrorPassword(true);
-      } else {
-        setErrorEmail(true);
-        setErrorPassword(true);
-      }
+      router.replace("/main/home");
+    } catch {
+      setError(true);
     }
   }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.logoText}>Sonnor</Text>
+      <Image
+        source={require("../../assets/Background.gif")}
+        style={styles.background}
+        resizeMode="cover"
+      />
+      <View style={styles.overlay} />
 
-      <Text style={styles.titleLarge}>hello</Text>
-      <Text style={styles.titleLarge}>welcome</Text>
+      <Text style={styles.logo}>Sonnor</Text>
 
-      {/* EMAIL */}
-      <View
-        style={[
-          styles.inputContainer,
-          errorEmail && { borderColor: "#8B0000", borderWidth: 1 },
-        ]}
-      >
-        <MailIcon size={22} color="#8f8f99" />
+      <View style={styles.form}>
+        <Text style={styles.title}>Iniciar sessão</Text>
+
         <TextInput
-          style={styles.input}
+          style={[styles.input, error && styles.inputError]}
           placeholder="Email"
-          placeholderTextColor="#808080"
-          value={email}
+          placeholderTextColor="#777"
           autoCapitalize="none"
-          keyboardType="email-address"
-          onChangeText={(t) => {
-            setEmail(t);
-            setErrorEmail(false);
-          }}
+          value={email}
+          onChangeText={setEmail}
         />
-      </View>
-
-      {/* PASSWORD */}
-      <View
-        style={[
-          styles.inputContainer,
-          errorPassword && { borderColor: "#8B0000", borderWidth: 1 },
-        ]}
-      >
-        <LockIcon size={22} color="#8f8f99" />
 
         <TextInput
-          style={[styles.input, { opacity: showPassword ? 0.4 : 1 }]}
+          style={[styles.input, error && styles.inputError]}
           placeholder="Password"
-          placeholderTextColor="#808080"
-          secureTextEntry={!showPassword}
+          placeholderTextColor="#777"
+          secureTextEntry
           value={password}
-          onChangeText={(t) => {
-            setPassword(t);
-            setErrorPassword(false);
-          }}
+          onChangeText={setPassword}
         />
 
-        <TouchableOpacity
-          style={styles.eyeButton}
-          onPress={() => setShowPassword(!showPassword)}
-        >
-          {showPassword ? (
-            <EyeOpen size={22} color="#fff" />
-          ) : (
-            <EyeClosed size={22} color="#fff" />
-          )}
+        <TouchableOpacity onPress={() => router.push("/auth/forgot-password")}>
+          <Text style={styles.forgot}>Esqueceste-te da password?</Text>
         </TouchableOpacity>
       </View>
 
-      <TouchableOpacity
-        style={styles.forgotPassContainer}
-        onPress={() => router.push("/auth/forgot-password")}
-      >
-        <Text style={styles.forgotPassText}>forgot the password?</Text>
-      </TouchableOpacity>
+      <View style={styles.actions}>
+        <TouchableOpacity style={styles.primary} onPress={handleLogin}>
+          <Text style={styles.primaryText}>Entrar</Text>
+        </TouchableOpacity>
 
-      <TouchableOpacity style={styles.signInButton} onPress={handleLogin}>
-        <Text style={styles.signInButtonText}>Sign In</Text>
-      </TouchableOpacity>
-
-      <View style={styles.dividerContainer}>
-        <View style={styles.line}></View>
-        <Text style={styles.orText}>OR</Text>
-        <View style={styles.line}></View>
+        <TouchableOpacity style={styles.apple}>
+          <Ionicons name="logo-apple" size={20} color="#000" />
+          <Text style={styles.appleText}>Iniciar sessão com Apple</Text>
+        </TouchableOpacity>
       </View>
-
-      <TouchableOpacity style={styles.appleButton}>
-        <View style={styles.iconContainerLeft}>
-          <AppleIcon size={22} color="#fff" />
-        </View>
-        <View style={styles.iconContainerRight} />
-        <Text style={styles.providerText}>Continue with apple</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.newAccountButton}
-        onPress={() => router.push("/auth/new-account")}
-      >
-        <View style={styles.iconContainerRight} />
-        <Text style={styles.providerText}>Create account</Text>
-      </TouchableOpacity>
     </View>
   );
 }
-
-////////////////////////////////////////////////////////////
-// ESTILOS
-////////////////////////////////////////////////////////////
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#000",
-    paddingHorizontal: 25,
-    paddingTop: 70,
   },
-
-  eyeButton: {
+  background: {
     position: "absolute",
-    right: 20,
-    opacity: 0.3,
+    width,
+    height,
+    opacity: 0.5,
   },
-
-  iconContainerLeft: {
+  overlay: {
     position: "absolute",
-    left: 20,
+    width,
+    height,
+    backgroundColor: "rgba(0,0,0,0.6)",
   },
-  iconContainerRight: {
-    width: 22,
-    height: 22,
-    opacity: 0,
-  },
-
-  logoText: {
+  logo: {
+    marginTop: 70,
+    textAlign: "center",
+    fontSize: 48,
+    color: "#fff",
     fontFamily: "Bristol",
-    fontSize: 60,
-    color: "#fff",
-    textAlign: "center",
-    marginBottom: 80,
   },
-
-  titleLarge: {
+  form: {
+    marginTop: 110,
+    paddingHorizontal: 24,
+    gap: 14,
+  },
+  title: {
     color: "#fff",
-    fontSize: 34,
+    fontSize: 22,
     fontWeight: "700",
-    marginLeft: 5,
-    marginBottom: 2,
   },
-
-  inputContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#111",
-    borderRadius: 50,
-    paddingHorizontal: 20,
-    height: 55,
-    marginTop: 20,
-    borderWidth: 0,
-  },
-
   input: {
-    flex: 1,
+    height: 54,
+    borderRadius: 30,
+    backgroundColor: "#111",
+    paddingHorizontal: 20,
     color: "#fff",
     fontSize: 16,
-    paddingLeft: 10,
   },
-
-  forgotPassContainer: {
-    marginTop: 10,
-    alignSelf: "flex-end",
-    paddingRight: 15,
-    marginBottom: 20,
+  inputError: {
+    borderWidth: 1,
+    borderColor: "#8B0000",
   },
-
-  forgotPassText: {
-    color: "#838383",
-    fontSize: 13,
-  },
-
-  signInButton: {
-    backgroundColor: "#fff",
-    borderRadius: 50,
-    height: 55,
-    justifyContent: "center",
-    alignItems: "center",
-    marginTop: 25,
-  },
-
-  signInButtonText: {
-    color: "#000",
-    fontSize: 18,
-    fontWeight: "600",
-  },
-
-  dividerContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginVertical: 30,
-  },
-
-  line: {
-    flex: 1,
-    height: 1,
-    backgroundColor: "#333",
-  },
-
-  orText: {
+  forgot: {
     color: "#777",
-    marginHorizontal: 10,
-    fontSize: 14,
+    fontSize: 13,
+    alignSelf: "flex-end",
   },
-
-  appleButton: {
-    backgroundColor: "#111",
-    borderRadius: 50,
-    height: 55,
-    flexDirection: "row",
+  actions: {
+    position: "absolute",
+    bottom: 40,
+    left: 24,
+    right: 24,
+    gap: 14,
+  },
+  primary: {
+    backgroundColor: "#fff",
+    paddingVertical: 16,
+    borderRadius: 32,
     alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 15,
-    position: "relative",
   },
-
-  newAccountButton: {
-    backgroundColor: "#111",
-    borderRadius: 50,
-    height: 55,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-  },
-
-  providerText: {
-    color: "#fff",
+  primaryText: {
+    color: "#000",
     fontSize: 16,
     fontWeight: "600",
-    marginRight: 30,
   },
-
-  footerText: {
-    color: "#666",
-    fontSize: 10,
-    textAlign: "center",
-    marginTop: 25,
-    lineHeight: 18,
+  apple: {
+    backgroundColor: "#fff",
+    paddingVertical: 16,
+    borderRadius: 32,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 10,
+  },
+  appleText: {
+    color: "#000",
+    fontSize: 15,
+    fontWeight: "500",
   },
 });

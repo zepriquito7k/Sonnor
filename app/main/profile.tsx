@@ -172,7 +172,7 @@ export default function ProfileScreen() {
           </View>
 
           <View style={styles.followButton}>
-            <Text style={styles.followText}>Follow</Text>
+            <Text style={styles.followText}>Editar</Text>
           </View>
         </Animated.View>
 
@@ -202,7 +202,7 @@ export default function ProfileScreen() {
           </View>
 
           <View style={styles.followButton}>
-            <Text style={styles.followText}>Follow</Text>
+            <Text style={styles.followText}>Editar</Text>
           </View>
         </Animated.View>
 
@@ -222,7 +222,7 @@ export default function ProfileScreen() {
         scrollEventThrottle={16}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: false }
+          { useNativeDriver: false },
         )}
       >
         {/* Espaçador para o conteúdo acompanhar a altura do banner (stretch + collapse) */}
@@ -814,3 +814,7 @@ const styles = StyleSheet.create({
     resizeMode: "cover",
   },
 });
+type JellyPopupProps = {
+  visible: boolean;
+  onClose: () => void;
+};
