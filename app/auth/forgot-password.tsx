@@ -1,30 +1,34 @@
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
+  Alert,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { sendPasswordResetCode } from "../../firebase/auth";
 
 import BackIcon from "../../icons/BackIcon";
 import MailIcon from "../../icons/MailIcon";
 
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../../firebase/config";
 import { isValidEmail } from "../../firebase/validate";
+import { useResponsive } from "../../utils/responsive"; // O Teu Hook
 
 export default function ForgotPassword() {
   const router = useRouter();
+  const { wp, hp, font } = useResponsive();
 
   const [email, setEmail] = useState("");
   const [errorEmail, setErrorEmail] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   async function handleReset() {
+    if (loading) return;
+
     setErrorEmail(false);
 
-    // 1. Validar email
     if (!isValidEmail(email)) {
       setErrorEmail(true);
       return;
@@ -33,60 +37,107 @@ export default function ForgotPassword() {
     const cleanEmail = email.trim().toLowerCase();
 
     try {
-      // 2. Tentar login com password falsa
-      await signInWithEmailAndPassword(
-        auth,
-        cleanEmail,
-        "__invalid_password__"
-      );
-    } catch (err: any) {
-      // EMAIL EXISTE (password errada)
-      if (err.code === "auth/wrong-password") {
-        router.push({
-          pathname: "/auth/verify-mail",
-          params: { email: cleanEmail },
-        });
-        return;
-      }
+      setLoading(true);
+      await sendPasswordResetCode(cleanEmail);
 
-      // EMAIL NÃO EXISTE
-      if (err.code === "auth/user-not-found") {
+      router.push({
+        pathname: "/auth/verify-mail",
+        params: { email: cleanEmail },
+      });
+    } catch (err: any) {
+      console.log("RESET PASSWORD ERROR:", {
+        code: err?.code,
+        details: err?.details,
+        message: err?.message,
+      });
+
+      if (
+        err?.code === "functions/not-found" ||
+        err?.code === "functions/invalid-argument"
+      ) {
         setErrorEmail(true);
         return;
       }
 
-      // Outros erros
-      console.log("FORGOT ERROR:", err);
-      setErrorEmail(true);
+      if (err?.code === "functions/failed-precondition") {
+        Alert.alert(
+          "Error",
+          "The email sender is not configured correctly in Firebase Functions.",
+        );
+        return;
+      }
+
+      if (err?.code === "functions/resource-exhausted") {
+        Alert.alert(
+          "Error",
+          "Too many reset requests were made. Please try again in a moment.",
+        );
+        return;
+      }
+
+      if (err?.code === "functions/unavailable") {
+        Alert.alert(
+          "Error",
+          "The email service is temporarily unavailable. Try again in a moment.",
+        );
+        return;
+      }
+
+      Alert.alert(
+        "Error",
+        err?.message ?? "Unable to send the verification code right now.",
+      );
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
-    <View style={styles.container}>
+    <View
+      style={[
+        styles.container,
+        { paddingHorizontal: wp(6.5), paddingTop: hp(8) },
+      ]}
+    >
+      {/* BACK BUTTON */}
       <TouchableOpacity
-        style={styles.backButton}
+        style={[styles.backButton, { marginBottom: hp(2.5), gap: wp(1.5) }]}
         onPress={() => router.push("/auth/login")}
       >
-        <BackIcon size={22} color="#fff" />
-        <Text style={styles.backText}>BACK</Text>
+        <BackIcon size={font(22)} color="#fff" />
+        <Text style={[styles.backText, { fontSize: font(15) }]}>BACK</Text>
       </TouchableOpacity>
 
-      <Text style={styles.logoText}>Sonnor</Text>
+      {/* LOGO */}
+      <Text
+        style={[styles.logoText, { fontSize: font(60), marginBottom: hp(5) }]}
+      >
+        Sonnor
+      </Text>
 
-      <Text style={styles.titleLarge}>Forget password?</Text>
-      <Text style={styles.subtitle}>Enter your email</Text>
+      {/* TEXTS */}
+      <Text style={[styles.titleLarge, { fontSize: font(34) }]}>
+        Forget password?
+      </Text>
+      <Text
+        style={[styles.subtitle, { fontSize: font(16), marginBottom: hp(4) }]}
+      >
+        Enter your email
+      </Text>
 
+      {/* INPUT CONTAINER */}
       <View
         style={[
           styles.inputContainer,
+          { height: hp(7), paddingHorizontal: wp(5), borderRadius: hp(7) / 2 },
           errorEmail && { borderColor: "#8B0000", borderWidth: 1.5 },
         ]}
       >
-        <MailIcon size={22} color="#8f8f99" />
+        <MailIcon size={font(22)} color="#8f8f99" />
         <TextInput
           placeholder="Email"
           placeholderTextColor="#808080"
-          style={styles.input}
+          style={[styles.input, { fontSize: font(16), paddingLeft: wp(2.5) }]}
           autoCapitalize="none"
           keyboardType="email-address"
           value={email}
@@ -97,65 +148,65 @@ export default function ForgotPassword() {
         />
       </View>
 
-      <TouchableOpacity style={styles.sendButton} onPress={handleReset}>
-        <Text style={styles.sendText}>send</Text>
+      {/* SEND BUTTON */}
+      <TouchableOpacity
+        style={[
+          styles.sendButton,
+          { height: hp(7), borderRadius: hp(7) / 2, marginTop: hp(4) },
+        ]}
+        onPress={handleReset}
+        disabled={loading}
+      >
+        <Text style={[styles.sendText, { fontSize: font(18) }]}>
+          {loading ? "sending..." : "send"}
+        </Text>
       </TouchableOpacity>
     </View>
   );
 }
 
-///////////////////////////////////////////////////////
-// ESTILOS — IGUAL AO LOGIN
-///////////////////////////////////////////////////////
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#000",
-    paddingHorizontal: 25,
-    paddingTop: 70,
   },
   backButton: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    marginBottom: 20,
   },
-  backText: { color: "#fff", fontSize: 15, fontWeight: "500" },
-
+  backText: {
+    color: "#fff",
+    fontWeight: "500",
+  },
   logoText: {
     fontFamily: "Bristol",
-    fontSize: 60,
     color: "#fff",
     textAlign: "center",
-    marginBottom: 40,
   },
-
-  titleLarge: { color: "#fff", fontSize: 34 },
-  subtitle: { color: "#ccc", fontSize: 16, marginBottom: 30 },
-
+  titleLarge: {
+    color: "#fff",
+    fontWeight: "700",
+  },
+  subtitle: {
+    color: "#ccc",
+  },
   inputContainer: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#111",
-    borderRadius: 50,
-    paddingHorizontal: 20,
-    height: 55,
   },
   input: {
     flex: 1,
     color: "#fff",
-    fontSize: 16,
-    paddingLeft: 10,
   },
-
   sendButton: {
     backgroundColor: "#222",
-    height: 55,
     justifyContent: "center",
     alignItems: "center",
-    borderRadius: 50,
-    marginTop: 30,
   },
-  sendText: { color: "#fff", fontSize: 18, fontWeight: "600" },
+  sendText: {
+    color: "#fff",
+    fontWeight: "600",
+    textTransform: "lowercase", // Mantendo o estilo do teu texto "send"
+  },
 });

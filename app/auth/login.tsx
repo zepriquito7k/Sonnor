@@ -1,9 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
-  Dimensions,
+  Keyboard,
   Image,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -12,15 +13,41 @@ import {
 } from "react-native";
 import { login } from "../../firebase/auth";
 import { isValidEmail } from "../../firebase/validate";
-
-const { width, height } = Dimensions.get("window");
+import { useResponsive } from "../../utils/responsive"; // Importado o seu hook
 
 export default function LoginScreen() {
   const router = useRouter();
+  const { wp, hp, font } = useResponsive(); // Inicializando as funções de escala
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(false);
+  const emailInputRef = useRef<TextInput>(null);
+  const passwordInputRef = useRef<TextInput>(null);
+  const previousPasswordRef = useRef("");
+
+  function handlePasswordChange(value: string) {
+    const previousValue = previousPasswordRef.current;
+
+    setPassword(value);
+    previousPasswordRef.current = value;
+
+    const receivedIosAutofill =
+      Platform.OS === "ios" &&
+      value.length > 1 &&
+      previousValue.length === 0 &&
+      passwordInputRef.current?.isFocused();
+
+    if (!receivedIosAutofill) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      emailInputRef.current?.blur();
+      passwordInputRef.current?.blur();
+      Keyboard.dismiss();
+    });
+  }
 
   async function handleLogin() {
     setError(false);
@@ -42,47 +69,97 @@ export default function LoginScreen() {
     <View style={styles.container}>
       <Image
         source={require("../../assets/Background.gif")}
-        style={styles.background}
+        style={[styles.background, { width: wp(100), height: hp(100) }]}
         resizeMode="cover"
       />
-      <View style={styles.overlay} />
+      <View style={[styles.overlay, { width: wp(100), height: hp(100) }]} />
 
-      <Text style={styles.logo}>Sonnor</Text>
+      <Text style={[styles.logo, { marginTop: hp(8), fontSize: font(48) }]}>
+        Sonnor
+      </Text>
 
-      <View style={styles.form}>
-        <Text style={styles.title}>Iniciar sessão</Text>
+      <View
+        style={[styles.form, { marginTop: hp(13), paddingHorizontal: wp(6) }]}
+      >
+        <Text style={[styles.title, { fontSize: font(22) }]}>
+          Iniciar sessão
+        </Text>
 
         <TextInput
-          style={[styles.input, error && styles.inputError]}
+          ref={emailInputRef}
+          style={[
+            styles.input,
+            error && styles.inputError,
+            {
+              height: hp(6.5),
+              borderRadius: wp(8),
+              fontSize: font(16),
+              paddingHorizontal: wp(5),
+            },
+          ]}
           placeholder="Email"
           placeholderTextColor="#777"
           autoCapitalize="none"
+          autoComplete="email"
+          keyboardType="email-address"
+          textContentType="username"
           value={email}
           onChangeText={setEmail}
         />
 
         <TextInput
-          style={[styles.input, error && styles.inputError]}
+          ref={passwordInputRef}
+          style={[
+            styles.input,
+            error && styles.inputError,
+            {
+              height: hp(6.5),
+              borderRadius: wp(8),
+              fontSize: font(16),
+              paddingHorizontal: wp(5),
+            },
+          ]}
           placeholder="Password"
           placeholderTextColor="#777"
+          autoComplete="current-password"
           secureTextEntry
+          textContentType="password"
           value={password}
-          onChangeText={setPassword}
+          onChangeText={handlePasswordChange}
         />
 
         <TouchableOpacity onPress={() => router.push("/auth/forgot-password")}>
-          <Text style={styles.forgot}>Esqueceste-te da password?</Text>
+          <Text style={[styles.forgot, { fontSize: font(13) }]}>
+            Esqueceste-te da password?
+          </Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.actions}>
-        <TouchableOpacity style={styles.primary} onPress={handleLogin}>
-          <Text style={styles.primaryText}>Entrar</Text>
+      <View
+        style={[styles.actions, { bottom: hp(5), paddingHorizontal: wp(6) }]}
+      >
+        <TouchableOpacity
+          style={[
+            styles.primary,
+            { paddingVertical: hp(1.8), borderRadius: wp(8) },
+          ]}
+          onPress={handleLogin}
+        >
+          <Text style={[styles.primaryText, { fontSize: font(16) }]}>
+            Entrar
+          </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.apple}>
-          <Ionicons name="logo-apple" size={20} color="#000" />
-          <Text style={styles.appleText}>Iniciar sessão com Apple</Text>
+        <TouchableOpacity
+          style={[
+            styles.apple,
+            { paddingVertical: hp(1.8), borderRadius: wp(8) },
+          ]}
+        >
+          <Ionicons name="logo-apple" size={font(20)} color="#000" />
+          <Text style={[styles.appleText, { fontSize: font(15) }]}>
+            Iniciar sessão com Apple
+          </Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -96,40 +173,27 @@ const styles = StyleSheet.create({
   },
   background: {
     position: "absolute",
-    width,
-    height,
     opacity: 0.5,
   },
   overlay: {
     position: "absolute",
-    width,
-    height,
     backgroundColor: "rgba(0,0,0,0.6)",
   },
   logo: {
-    marginTop: 70,
     textAlign: "center",
-    fontSize: 48,
     color: "#fff",
     fontFamily: "Bristol",
   },
   form: {
-    marginTop: 110,
-    paddingHorizontal: 24,
     gap: 14,
   },
   title: {
     color: "#fff",
-    fontSize: 22,
     fontWeight: "700",
   },
   input: {
-    height: 54,
-    borderRadius: 30,
     backgroundColor: "#111",
-    paddingHorizontal: 20,
     color: "#fff",
-    fontSize: 16,
   },
   inputError: {
     borderWidth: 1,
@@ -137,31 +201,25 @@ const styles = StyleSheet.create({
   },
   forgot: {
     color: "#777",
-    fontSize: 13,
     alignSelf: "flex-end",
   },
   actions: {
     position: "absolute",
-    bottom: 40,
-    left: 24,
-    right: 24,
+    left: 0,
+    right: 0,
     gap: 14,
   },
   primary: {
     backgroundColor: "#fff",
-    paddingVertical: 16,
-    borderRadius: 32,
     alignItems: "center",
+    justifyContent: "center",
   },
   primaryText: {
     color: "#000",
-    fontSize: 16,
     fontWeight: "600",
   },
   apple: {
     backgroundColor: "#fff",
-    paddingVertical: 16,
-    borderRadius: 32,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
@@ -169,7 +227,6 @@ const styles = StyleSheet.create({
   },
   appleText: {
     color: "#000",
-    fontSize: 15,
     fontWeight: "500",
   },
 });

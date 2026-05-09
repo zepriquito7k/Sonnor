@@ -1,5 +1,4 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { httpsCallable } from "firebase/functions";
 import React, { useRef, useState } from "react";
 import {
   Alert,
@@ -10,17 +9,22 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { functions } from "../../firebase/config";
+import {
+  sendPasswordResetCode,
+  verifyPasswordResetCode,
+} from "../../firebase/auth";
 
 import BackIcon from "../../icons/BackIcon";
 
 export default function VerifyMail() {
   const router = useRouter();
-  const params = useLocalSearchParams(); // recebe email do forgot-password
+  const params = useLocalSearchParams<{ email?: string | string[] }>();
+  const email = Array.isArray(params.email) ? params.email[0] : params.email;
 
   const [codes, setCodes] = useState(["", "", "", ""]);
   const [errorCode, setErrorCode] = useState(false);
   const [resendLoading, setResendLoading] = useState(false);
+  const [verifyLoading, setVerifyLoading] = useState(false);
 
   const inputsRef = [
     useRef<TextInput>(null),
@@ -44,42 +48,60 @@ export default function VerifyMail() {
   }
 
   async function handleVerify() {
+    if (verifyLoading) return;
+
     const fullCode = codes.join("");
 
-    if (fullCode.length < 4) {
+    if (!email || fullCode.length < 4) {
       setErrorCode(true);
       return;
     }
 
     try {
-      const verifyOTP = httpsCallable(functions, "verifyOtp");
-      await verifyOTP({ email: params.email, code: fullCode });
+      setVerifyLoading(true);
+      const { resetToken } = await verifyPasswordResetCode(email, fullCode);
 
-      router.push("/auth/new-password");
-    } catch (err) {
+      router.push({
+        pathname: "/auth/new-password",
+        params: { email, resetToken },
+      });
+    } catch (err: any) {
       console.log("OTP ERROR:", err);
       setErrorCode(true);
+
+      let message = "Unable to verify the code right now.";
+
+      if (err?.code === "functions/deadline-exceeded") {
+        message = "This code expired. Please request a new one.";
+      } else if (err?.code === "functions/permission-denied") {
+        message = "The verification code is incorrect.";
+      } else if (err?.code === "functions/not-found") {
+        message = "No verification code was found for this email.";
+      }
+
+      Alert.alert("Error", message);
+    } finally {
+      setVerifyLoading(false);
     }
   }
 
   async function handleResend() {
-    if (resendLoading) return;
+    if (!email || resendLoading) return;
     setResendLoading(true);
 
     try {
-      const sendOtp = httpsCallable(functions, "sendOtpEmail");
-      await sendOtp({ email: params.email });
+      await sendPasswordResetCode(email);
 
       Alert.alert(
         "Code sent",
-        "A new verification code was sent to your email."
+        "A new verification code was sent to your email.",
       );
     } catch (err) {
       console.log("RESEND ERROR:", err);
       Alert.alert("Error", "Failed to resend code.");
+    } finally {
+      setResendLoading(false);
     }
-
-    setResendLoading(false);
   }
 
   return (
@@ -98,7 +120,7 @@ export default function VerifyMail() {
       </Text>
 
       <View style={styles.codeRow}>
-        {codes.map((c, index) => (
+        {codes.map((_, index) => (
           <TextInput
             key={index}
             ref={inputsRef[index]}
@@ -120,8 +142,14 @@ export default function VerifyMail() {
         </Text>
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.verifyButton} onPress={handleVerify}>
-        <Text style={styles.verifyText}>Verify</Text>
+      <TouchableOpacity
+        style={[styles.verifyButton, verifyLoading && { opacity: 0.7 }]}
+        onPress={handleVerify}
+        disabled={verifyLoading}
+      >
+        <Text style={styles.verifyText}>
+          {verifyLoading ? "Verifying..." : "Verify"}
+        </Text>
       </TouchableOpacity>
     </View>
   );

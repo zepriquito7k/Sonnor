@@ -1,3 +1,4 @@
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
   Alert,
@@ -9,67 +10,225 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { resetPassword } from "../../firebase/auth";
+import { completePasswordReset } from "../../firebase/auth";
+import { useResponsive } from "../../utils/responsive";
 
-export default function NewPasswordScreen({ navigation }: any) {
-  const [email, setEmail] = useState("");
+// Ícones
+import BackIcon from "../../icons/BackIcon";
+import EyeClosed from "../../icons/EyeClosed";
+import EyeOpen from "../../icons/EyeOpen";
+import KeyIcon from "../../icons/KeyIcon";
+import LockIcon from "../../icons/LockIcon";
+
+export default function NewPasswordScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{
+    email?: string | string[];
+    resetToken?: string | string[];
+  }>();
+  const { wp, hp, font } = useResponsive();
+  const email = Array.isArray(params.email) ? params.email[0] : params.email;
+  const resetToken = Array.isArray(params.resetToken)
+    ? params.resetToken[0]
+    : params.resetToken;
+
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const [errorPassword, setErrorPassword] = useState(false);
+  const [errorConfirm, setErrorConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const handleResetPassword = async () => {
-    if (!email) {
-      Alert.alert("Erro", "Introduz o email.");
+  async function handleUpdate() {
+    if (loading) return;
+
+    setErrorPassword(false);
+    setErrorConfirm(false);
+
+    if (!email || !resetToken) {
+      Alert.alert(
+        "Error",
+        "Your password reset session expired. Please request a new code.",
+      );
+      router.replace("/auth/forgot-password");
+      return;
+    }
+
+    if (password.length < 6) {
+      setErrorPassword(true);
+      Alert.alert("Error", "Your new password must have at least 6 characters.");
+      return;
+    }
+
+    if (password !== confirm) {
+      setErrorConfirm(true);
+      Alert.alert("Erro", "As senhas não coincidem.");
       return;
     }
 
     try {
       setLoading(true);
-      await resetPassword(email.trim());
+      await completePasswordReset(email, resetToken, password);
+      // Lógica Firebase aqui
+      Alert.alert("Success", "Your password was updated.");
+      router.replace("/auth/login");
+    } catch (err: any) {
+      console.log("UPDATE PASSWORD ERROR:", err);
       Alert.alert(
-        "Email enviado",
-        "Verifica o teu email para redefinir a palavra-passe."
+        "Error",
+        err?.message ?? "Unable to update the password right now.",
       );
-      navigation.goBack();
-    } catch (error: any) {
-      Alert.alert("Erro", error.message);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      style={styles.mainContainer}
     >
-      <View style={styles.content}>
-        <Text style={styles.title}>Nova palavra-passe</Text>
-
-        <Text style={styles.subtitle}>
-          Introduz o email associado à tua conta.
-        </Text>
-
-        <TextInput
-          style={styles.input}
-          placeholder="Email"
-          placeholderTextColor="#888"
-          autoCapitalize="none"
-          keyboardType="email-address"
-          value={email}
-          onChangeText={setEmail}
-        />
-
+      <View
+        style={[
+          styles.content,
+          {
+            paddingHorizontal: wp(6.4),
+            paddingTop: hp(8),
+            paddingBottom: hp(5),
+          },
+        ]}
+      >
+        {/* TOPO: VOLTAR */}
         <TouchableOpacity
-          style={styles.button}
-          onPress={handleResetPassword}
-          disabled={loading}
+          style={[styles.backButton, { marginBottom: hp(2.4), gap: wp(2) }]}
+          onPress={() => router.back()}
         >
-          <Text style={styles.buttonText}>
-            {loading ? "A enviar..." : "Enviar email"}
-          </Text>
+          <BackIcon size={font(22)} color="#fff" />
+          <Text style={[styles.backText, { fontSize: font(15) }]}>BACK</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.backText}>Voltar</Text>
+        {/* LOGO */}
+        <Text
+          style={[styles.logoText, { fontSize: font(60), marginBottom: hp(4) }]}
+        >
+          Sonnor
+        </Text>
+
+        {/* TÍTULOS */}
+        <View style={{ marginBottom: hp(4) }}>
+          <Text
+            style={[
+              styles.titleLarge,
+              { fontSize: font(34), lineHeight: font(40) },
+            ]}
+          >
+            Reset your
+          </Text>
+          <Text
+            style={[
+              styles.titleLarge,
+              { fontSize: font(34), lineHeight: font(40) },
+            ]}
+          >
+            password
+          </Text>
+        </View>
+
+        {/* INPUTS */}
+        <View style={styles.inputsWrapper}>
+          <View
+            style={[
+              styles.inputContainer,
+              {
+                height: hp(7),
+                borderRadius: hp(7) / 2,
+                paddingHorizontal: wp(5),
+                marginBottom: hp(2),
+              },
+              errorPassword && styles.errorBorder,
+            ]}
+          >
+            <LockIcon size={font(20)} color="#8f8f99" />
+            <TextInput
+              style={[
+                styles.input,
+                { fontSize: font(16), marginLeft: wp(3), paddingRight: wp(10) },
+              ]}
+              placeholder="New Password"
+              placeholderTextColor="#808080"
+              secureTextEntry={!showPassword}
+              value={password}
+              onChangeText={(t) => {
+                setPassword(t);
+                setErrorPassword(false);
+              }}
+            />
+            <TouchableOpacity
+              style={[styles.eyeButton, { right: wp(5) }]}
+              onPress={() => setShowPassword(!showPassword)}
+            >
+              {showPassword ? (
+                <EyeOpen size={font(20)} color="#fff" />
+              ) : (
+                <EyeClosed size={font(20)} color="#fff" />
+              )}
+            </TouchableOpacity>
+          </View>
+
+          <View
+            style={[
+              styles.inputContainer,
+              {
+                height: hp(7),
+                borderRadius: hp(7) / 2,
+                paddingHorizontal: wp(5),
+              },
+              errorConfirm && styles.errorBorder,
+            ]}
+          >
+            <KeyIcon size={font(20)} color="#8f8f99" />
+            <TextInput
+              style={[
+                styles.input,
+                { fontSize: font(16), marginLeft: wp(3), paddingRight: wp(10) },
+              ]}
+              placeholder="Confirm Password"
+              placeholderTextColor="#808080"
+              secureTextEntry={!showConfirm}
+              value={confirm}
+              onChangeText={(t) => {
+                setConfirm(t);
+                setErrorConfirm(false);
+              }}
+            />
+            <TouchableOpacity
+              style={[styles.eyeButton, { right: wp(5) }]}
+              onPress={() => setShowConfirm(!showConfirm)}
+            >
+              {showConfirm ? (
+                <EyeOpen size={font(20)} color="#fff" />
+              ) : (
+                <EyeClosed size={font(20)} color="#fff" />
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* BOTÃO FINAL */}
+        <TouchableOpacity
+          style={[
+            styles.submitButton,
+            { height: hp(7), marginTop: hp(5), borderRadius: hp(7) / 2 },
+          ]}
+          onPress={handleUpdate}
+          disabled={loading}
+        >
+          <Text style={[styles.submitButtonText, { fontSize: font(18) }]}>
+            {loading ? "Updating..." : "Update Password"}
+          </Text>
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
@@ -77,51 +236,57 @@ export default function NewPasswordScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  mainContainer: {
     flex: 1,
     backgroundColor: "#000",
-    justifyContent: "center",
   },
   content: {
-    paddingHorizontal: 24,
+    flex: 1, // Ocupa todo o espaço sem scroll
   },
-  title: {
-    fontSize: 26,
-    fontWeight: "600",
-    color: "#fff",
-    marginBottom: 12,
-    textAlign: "center",
-  },
-  subtitle: {
-    fontSize: 14,
-    color: "#888",
-    marginBottom: 24,
-    textAlign: "center",
-  },
-  input: {
-    backgroundColor: "#111",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    fontSize: 16,
-    color: "#fff",
-    marginBottom: 16,
-  },
-  button: {
-    backgroundColor: "#fff",
-    paddingVertical: 14,
-    borderRadius: 14,
-    marginBottom: 20,
-  },
-  buttonText: {
-    color: "#000",
-    fontSize: 16,
-    fontWeight: "600",
-    textAlign: "center",
+  backButton: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   backText: {
-    color: "#888",
+    color: "#fff",
+    fontWeight: "500",
+  },
+  logoText: {
+    fontFamily: "Bristol",
+    color: "#fff",
     textAlign: "center",
-    fontSize: 14,
+  },
+  titleLarge: {
+    color: "#fff",
+    fontWeight: "800",
+  },
+  inputsWrapper: {
+    width: "100%",
+  },
+  inputContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#111",
+  },
+  input: {
+    flex: 1,
+    color: "#fff",
+  },
+  errorBorder: {
+    borderColor: "#8B0000",
+    borderWidth: 1.5,
+  },
+  eyeButton: {
+    position: "absolute",
+    opacity: 0.5,
+  },
+  submitButton: {
+    backgroundColor: "#fff",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  submitButtonText: {
+    color: "#000",
+    fontWeight: "700",
   },
 });

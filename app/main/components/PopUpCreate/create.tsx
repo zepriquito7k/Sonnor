@@ -3,14 +3,15 @@ import { useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 
-/* ------------------ TIPOS ------------------ */
 type CheckKey =
   | "rights"
   | "correctNames"
@@ -21,25 +22,15 @@ type CheckKey =
 export default function CreateMusic() {
   const router = useRouter();
 
-  /* ------------------ ESTADOS ------------------ */
-
   const [step, setStep] = useState(1);
-
-  // Etapa 1
   const [file, setFile] = useState<string | null>(null);
-
-  // Etapa 2 – análise simulada
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
-
-  // Etapa 3 – metadados
   const [musicName, setMusicName] = useState("Nova Música");
   const [albumName, setAlbumName] = useState("");
   const [releaseType, setReleaseType] = useState<
     "single" | "ep" | "album" | null
   >(null);
-
-  // Etapa 4 – confirmações
   const [checks, setChecks] = useState<Record<CheckKey, boolean>>({
     rights: false,
     correctNames: false,
@@ -50,27 +41,37 @@ export default function CreateMusic() {
 
   const allChecksOk = Object.values(checks).every(Boolean);
 
-  /* ------------------ DESBLOQUEIO DAS ETAPAS ------------------ */
-
   const stepUnlocked = {
     1: true,
     2: !!file,
     3: analysisProgress === 100,
-    4: !!musicName && releaseType !== null,
+    4: !!musicName.trim() && releaseType !== null,
   };
 
-  /* ------------------ SIMULAR PICK ------------------ */
-
-  const simulatePickFile = () => {
+  function simulatePickFile() {
     setFile("musica_exemplo.mp3");
     setMusicName("Nova Música");
-
     setStep(2);
     setAnalyzing(true);
     setAnalysisProgress(0);
-  };
+  }
 
-  /* ------------------ SIMULAÇÃO DE ANÁLISE ------------------ */
+  function handlePublish() {
+    if (!allChecksOk) {
+      return;
+    }
+
+    Alert.alert(
+      "Música pronta",
+      `“${musicName.trim()}” foi preparada para publicação.`,
+      [
+        {
+          text: "Fechar",
+          onPress: () => router.back(),
+        },
+      ],
+    );
+  }
 
   useEffect(() => {
     if (!analyzing) return;
@@ -92,63 +93,54 @@ export default function CreateMusic() {
     return () => clearInterval(interval);
   }, [analyzing]);
 
-  /* ============================================================= */
-  /* ===================== RENDER DA SCREEN ======================= */
-  /* ============================================================= */
-
   return (
     <View style={styles.root}>
-      {/* ---------- HEADER FIXO ---------- */}
       <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={22} color="#fff" />
+        </TouchableOpacity>
+
         <Text style={styles.headerTitle}>Criar Música</Text>
         <Text style={styles.headerStep}>Etapa {step}/4</Text>
       </View>
 
-      {/* ---------- SCROLL GERAL (DESBLOQUEADO GRADUALMENTE) ---------- */}
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={{ paddingBottom: 160 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* ================================================= */}
-        {/* ================== ETAPA 1 ====================== */}
-        {/* ================================================= */}
-
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Ficheiro</Text>
 
-          {!file && (
-            <TouchableOpacity
-              style={styles.fileButton}
-              onPress={simulatePickFile}
-            >
+          {!file ? (
+            <TouchableOpacity style={styles.fileButton} onPress={simulatePickFile}>
               <Ionicons
                 name="cloud-upload-outline"
                 size={42}
-                color="#5b523eff"
+                color="#5b523e"
               />
               <Text style={styles.fileButtonText}>
                 Selecionar ficheiro de áudio
               </Text>
               <Text style={styles.fileFormats}>mp3 · wav · flac</Text>
             </TouchableOpacity>
-          )}
-
-          {file && (
-            <View style={styles.fileSelected}>
+          ) : (
+            <TouchableOpacity
+              style={styles.fileSelected}
+              onPress={simulatePickFile}
+            >
               <Ionicons
                 name="musical-note-outline"
                 size={26}
-                color="#5b523eff"
+                color="#5b523e"
               />
-              <Text style={styles.fileSelectedText}>{file}</Text>
-            </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fileSelectedText}>{file}</Text>
+                <Text style={styles.fileSelectedHint}>Toque para trocar</Text>
+              </View>
+            </TouchableOpacity>
           )}
         </View>
-
-        {/* ================================================= */}
-        {/* ================== ETAPA 2 ====================== */}
-        {/* ================================================= */}
 
         {stepUnlocked[2] && (
           <View style={styles.section}>
@@ -157,7 +149,7 @@ export default function CreateMusic() {
             <View style={styles.analyzeBox}>
               {analysisProgress < 100 ? (
                 <>
-                  <ActivityIndicator size="large" color="#5b523eff" />
+                  <ActivityIndicator size="large" color="#5b523e" />
                   <Text style={styles.analyzeText}>A analisar ficheiro...</Text>
 
                   <View style={styles.progressBar}>
@@ -176,47 +168,46 @@ export default function CreateMusic() {
           </View>
         )}
 
-        {/* ================================================= */}
-        {/* ================== ETAPA 3 ====================== */}
-        {/* ================================================= */}
-
         {stepUnlocked[3] && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Detalhes</Text>
 
-            {/* Título */}
             <Text style={styles.inputLabel}>Título da música</Text>
-            <TouchableOpacity style={styles.inputBox}>
-              <Text style={styles.inputText}>{musicName}</Text>
-            </TouchableOpacity>
+            <TextInput
+              value={musicName}
+              onChangeText={setMusicName}
+              placeholder="Nome da música"
+              placeholderTextColor="#666"
+              style={styles.inputBox}
+            />
 
-            {/* Álbum */}
             <Text style={styles.inputLabel}>Álbum (opcional)</Text>
-            <TouchableOpacity style={styles.inputBox}>
-              <Text style={styles.inputText}>
-                {albumName || "Nome do álbum ou vazio"}
-              </Text>
-            </TouchableOpacity>
+            <TextInput
+              value={albumName}
+              onChangeText={setAlbumName}
+              placeholder="Nome do álbum ou deixa vazio"
+              placeholderTextColor="#666"
+              style={styles.inputBox}
+            />
 
-            {/* Tipo de lançamento */}
             <Text style={styles.inputLabel}>Tipo de lançamento</Text>
             <View style={styles.typeRow}>
-              {["single", "ep", "album"].map((t) => (
+              {["single", "ep", "album"].map((type) => (
                 <TouchableOpacity
-                  key={t}
+                  key={type}
                   style={[
                     styles.typeButton,
-                    releaseType === t && styles.typeButtonActive,
+                    releaseType === type && styles.typeButtonActive,
                   ]}
-                  onPress={() => setReleaseType(t as any)}
+                  onPress={() => setReleaseType(type as "single" | "ep" | "album")}
                 >
                   <Text
                     style={[
                       styles.typeText,
-                      releaseType === t && styles.typeTextActive,
+                      releaseType === type && styles.typeTextActive,
                     ]}
                   >
-                    {t.toUpperCase()}
+                    {type.toUpperCase()}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -232,10 +223,6 @@ export default function CreateMusic() {
             )}
           </View>
         )}
-
-        {/* ================================================= */}
-        {/* ================== ETAPA 4 ====================== */}
-        {/* ================================================= */}
 
         {stepUnlocked[4] && (
           <View style={styles.section}>
@@ -273,6 +260,7 @@ export default function CreateMusic() {
             <TouchableOpacity
               disabled={!allChecksOk}
               style={[styles.publishButton, !allChecksOk && styles.disabled]}
+              onPress={handlePublish}
             >
               <Text style={styles.publishText}>Publicar música</Text>
             </TouchableOpacity>
@@ -283,16 +271,11 @@ export default function CreateMusic() {
   );
 }
 
-/* ============================================================= */
-/* ============================ STYLES =========================== */
-/* ============================================================= */
-
 const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: "#000",
   },
-
   header: {
     paddingTop: 56,
     paddingBottom: 16,
@@ -300,6 +283,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.06)",
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
   },
   headerTitle: {
@@ -311,23 +295,18 @@ const styles = StyleSheet.create({
     color: "#777",
     fontSize: 14,
   },
-
   scroll: {
     paddingHorizontal: 20,
   },
-
   section: {
     marginTop: 28,
   },
-
   sectionTitle: {
     color: "#fff",
     fontSize: 15,
     fontWeight: "600",
     marginBottom: 14,
   },
-
-  /* --------- ETAPA 1 --------- */
   fileButton: {
     alignItems: "center",
     paddingVertical: 40,
@@ -346,19 +325,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
   },
-
   fileSelected: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    paddingVertical: 10,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: "#0b0b0b",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
   },
   fileSelectedText: {
     color: "#ddd",
     fontSize: 14,
   },
-
-  /* --------- ETAPA 2 --------- */
+  fileSelectedHint: {
+    color: "#777",
+    fontSize: 12,
+    marginTop: 4,
+  },
   analyzeBox: {
     paddingVertical: 30,
     alignItems: "center",
@@ -369,7 +354,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   analyzeDone: {
-    color: "#5b523eff",
+    color: "#5b523e",
     fontSize: 15,
     fontWeight: "600",
   },
@@ -383,10 +368,8 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: "100%",
-    backgroundColor: "#5b523eff",
+    backgroundColor: "#5b523e",
   },
-
-  /* --------- ETAPA 3 --------- */
   inputLabel: {
     color: "#bbb",
     fontSize: 13,
@@ -394,15 +377,15 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   inputBox: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.14)",
-  },
-  inputText: {
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "#0d0d0d",
     color: "#fff",
-    fontSize: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
-
   typeRow: {
     flexDirection: "row",
     gap: 10,
@@ -416,8 +399,8 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.14)",
   },
   typeButtonActive: {
-    backgroundColor: "#5b523eff",
-    borderColor: "#5b523eff",
+    backgroundColor: "#5b523e",
+    borderColor: "#5b523e",
   },
   typeText: {
     color: "#aaa",
@@ -427,11 +410,10 @@ const styles = StyleSheet.create({
     color: "#000",
     fontWeight: "700",
   },
-
   nextStepButton: {
     marginTop: 20,
     paddingVertical: 12,
-    backgroundColor: "#5b523eff",
+    backgroundColor: "#5b523e",
     borderRadius: 10,
     alignItems: "center",
   },
@@ -440,8 +422,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
   },
-
-  /* --------- ETAPA 4 --------- */
   checkRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -452,7 +432,7 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: "#5b523eff",
+    borderColor: "#5b523e",
     alignItems: "center",
     justifyContent: "center",
     marginRight: 10,
@@ -460,7 +440,7 @@ const styles = StyleSheet.create({
   checkboxInner: {
     width: 12,
     height: 12,
-    backgroundColor: "#5b523eff",
+    backgroundColor: "#5b523e",
     borderRadius: 4,
   },
   checkText: {
@@ -468,11 +448,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     flex: 1,
   },
-
   publishButton: {
     marginTop: 20,
     paddingVertical: 14,
-    backgroundColor: "#5b523eff",
+    backgroundColor: "#5b523e",
     borderRadius: 12,
     alignItems: "center",
   },
@@ -481,7 +460,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
   },
-
   disabled: {
     opacity: 0.4,
   },

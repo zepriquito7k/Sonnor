@@ -1,52 +1,55 @@
+import * as crypto from "crypto";
 import * as admin from "firebase-admin";
-import * as functions from "firebase-functions";
+import { HttpsError, onCall } from "firebase-functions/v2/https";
 
 if (!admin.apps.length) {
   admin.initializeApp();
 }
 
-export const verifyOtp = functions.https.onCall(
-  async (request: functions.https.CallableRequest<any>) => {
-    const email = request.data.email;
-    const code = request.data.code;
+const db = admin.firestore();
 
-    if (!email || !code) {
-      throw new functions.https.HttpsError(
-        "invalid-argument",
-        "Missing fields"
-      );
-    }
+function hashCode(code: string): string {
+  return crypto.createHash("sha256").update(code).digest("hex");
+}
 
-    const docRef = admin.firestore().collection("otpCodes").doc(email);
-    const doc = await docRef.get();
+export const verifyOtp = onCall(async (request) => {
+  const email = request.data.email?.trim().toLowerCase();
+  const code = request.data.code?.trim();
 
-    if (!doc.exists) {
-      throw new functions.https.HttpsError("not-found", "OTP not found");
-    }
-
-    const dataDB = doc.data();
-
-    if (!dataDB || !dataDB.code || !dataDB.expiresAt) {
-      throw new functions.https.HttpsError("not-found", "Invalid OTP data");
-    }
-
-    // validar código
-    if (dataDB.code !== code) {
-      throw new functions.https.HttpsError(
-        "permission-denied",
-        "Incorrect code"
-      );
-    }
-
-    // validar expiração
-    const expiresAt = dataDB.expiresAt.toMillis();
-    if (Date.now() > expiresAt) {
-      throw new functions.https.HttpsError("deadline-exceeded", "Code expired");
-    }
-
-    // OTP correto → apagar doc
-    await docRef.delete();
-
-    return { success: true };
+  if (!email || !code) {
+    throw new HttpsError("invalid-argument", "Dados inválidos.");
   }
-);
+
+  const docRef = db.collection("otps").doc(email);
+  const snap = await docRef.get();
+
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "Código não encontrado.");
+  }
+
+  const data = snap.data() as any;
+
+  if (data.expiresAt.toMillis() < Date.now()) {
+    await docRef.delete();
+    throw new HttpsError("deadline-exceeded", "Código expirado.");
+  }
+
+  if (data.attempts >= 5) {
+    await docRef.delete();
+    throw new HttpsError("permission-denied", "Muitas tentativas.");
+  }
+
+  const incomingHash = hashCode(code);
+
+  if (incomingHash !== data.codeHash) {
+    await docRef.update({
+      attempts: admin.firestore.FieldValue.increment(1),
+    });
+
+    throw new HttpsError("permission-denied", "Código incorreto.");
+  }
+
+  await docRef.delete();
+
+  return { success: true };
+});

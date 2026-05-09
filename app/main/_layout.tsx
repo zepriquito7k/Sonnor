@@ -2,6 +2,7 @@ import { Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { View } from "react-native";
 import DynamicIslandTest from "./components/Dynamicmenu";
+import { SharedMediaProgressProvider } from "./components/SharedMediaProgress";
 
 export default function MainLayout() {
   const pathname = usePathname();
@@ -13,17 +14,19 @@ export default function MainLayout() {
     pathname === "/main/profile";
 
   return (
-    <View style={{ flex: 1, backgroundColor: "#000" }}>
-      <StatusBar style="light" />
+    <SharedMediaProgressProvider>
+      <View style={{ flex: 1, backgroundColor: "#000" }}>
+        <StatusBar style="light" />
 
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          animation: "fade",
-        }}
-      />
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            animation: "fade",
+          }}
+        />
 
-      {showDynamic && <DynamicIslandTest />}
-    </View>
+        {showDynamic && <DynamicIslandTest />}
+      </View>
+    </SharedMediaProgressProvider>
   );
 }

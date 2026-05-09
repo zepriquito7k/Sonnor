@@ -16,6 +16,7 @@
     "@react-navigation/bottom-tabs": "^7.4.0",
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",
+    "crypto": "^1.0.1",
     "expo": "~54.0.25",
     "expo-av": "~16.0.7",
     "expo-blur": "~15.0.8",
@@ -34,8 +35,9 @@
     "expo-video": "~3.0.14",
     "expo-web-browser": "~15.0.9",
     "firebase": "^12.6.0",
-    "firebase-admin": "^13.6.0",
-    "firebase-functions": "^7.0.0",
+    "firebase-admin": "^13.7.0",
+    "firebase-functions": "^7.0.6",
+    "nodemailer": "^8.0.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
@@ -51,6 +53,7 @@
     "resend": "^6.5.2"
   },
   "devDependencies": {
+    "@types/node": "^25.3.3",
     "@types/react": "~19.1.0",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",

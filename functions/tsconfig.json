@@ -10,7 +10,7 @@
     "strict": true,
     "target": "es2017",
     "types": ["node"],
-    "ignoreDeprecations": "6.0"
+    "rootDir": "src" // ← aqui
   },
   "compileOnSave": true,
   "include": ["src"]
