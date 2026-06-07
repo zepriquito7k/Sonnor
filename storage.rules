@@ -1,0 +1,71 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function owns(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    match /users/{userId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if owns(userId) || isAdmin();
+    }
+
+    match /albums/{albumId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+
+    match /tracks/{trackId}/cover.jpg {
+      allow read: if true;
+      allow write: if signedIn()
+        && request.resource.contentType.matches("image/.*")
+        && request.resource.size < 12 * 1024 * 1024;
+    }
+
+    match /tracks/{trackId}/short-video.mp4 {
+      allow read: if true;
+      allow write: if signedIn()
+        && request.resource.contentType.matches("video/.*")
+        && request.resource.size < 80 * 1024 * 1024;
+    }
+
+    match /tracks/{trackId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /musicSubmissions/{submissionId}/source.mp3 {
+      allow read: if signedIn();
+      allow write: if signedIn()
+        && request.resource.contentType in ["audio/mpeg", "audio/mp3", "application/octet-stream"]
+        && request.resource.size < 60 * 1024 * 1024;
+    }
+
+    match /posts/{postId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+
+    match /collections/{collectionId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+
+    match /messages/{threadId}/{messageId}/{allPaths=**} {
+      allow read, write: if signedIn();
+    }
+
+    match /tempUploads/{userId}/{allPaths=**} {
+      allow read, write: if owns(userId) || isAdmin();
+    }
+  }
+}

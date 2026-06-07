@@ -1,8 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
-import { ResizeMode, Video } from "expo-av";
 import { BlurView } from "expo-blur";
-import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
+import { VideoView, useVideoPlayer } from "expo-video";
 import React, {
   useCallback,
   useEffect,
@@ -37,10 +36,16 @@ import {
 
 import {
   pickLibraryAsset,
-  pickLibraryImages,
+  pickLibraryAssets,
 } from "../../../../utils/mediaPicker";
+import { auth } from "../../../../firebase/config";
+import { getHomeContent } from "../../../../firebase/contentClient";
+import { createPost, updatePostMedia } from "../../../../firebase/contentMutations";
+import { uploadUriToStorage } from "../../../../firebase/storageClient";
+import { useCurrentUser } from "../../../../hooks/useCurrentUser";
 
 const MAX_CHARS = 180;
+const MAX_VIDEO_DURATION_SECONDS = 30;
 const OVERLAY_STAGE_SIZE = 168;
 const TRASH_ZONE_SIZE = 88;
 
@@ -49,6 +54,7 @@ type FilterType = "none" | "bw" | "warm" | "cool";
 type OverlayItem = {
   id: string;
   uri: string;
+  extension: string;
   x: number;
   y: number;
   scale: number;
@@ -63,64 +69,51 @@ type ReadySong = {
   release: string;
   duration: string;
   cover: string;
+  shortVideoUrl: string;
 };
 
-const READY_SONGS: ReadySong[] = [
-  {
-    id: "noites-de-neon",
-    title: "Noites de Neon",
-    artist: "Artist Name",
-    release: "Neon Dreams",
-    duration: "3:24",
-    cover:
-      "https://i.pinimg.com/1200x/f5/8d/79/f58d797b9db7094bed77987ec32cc954.jpg",
-  },
-  {
-    id: "velvet-city",
-    title: "Velvet City",
-    artist: "Artist Name",
-    release: "Neon Dreams",
-    duration: "2:58",
-    cover:
-      "https://i.pinimg.com/1200x/f4/2f/59/f42f595b9b6b0b9cc8269e4a84364707.jpg",
-  },
-  {
-    id: "afterlight",
-    title: "Afterlight",
-    artist: "Artist Name",
-    release: "Neon Dreams",
-    duration: "3:11",
-    cover:
-      "https://i.pinimg.com/1200x/8d/dc/29/8ddc29e3bbdadf33fc22ca5ffa23d59d.jpg",
-  },
-  {
-    id: "late-hours",
-    title: "Late Hours",
-    artist: "Artist Name",
-    release: "Midnight Avenue",
-    duration: "3:18",
-    cover:
-      "https://i.pinimg.com/1200x/8f/2a/0b/8f2a0b7b1f8a4d7f1b3c2d9e0f1a2b3c.jpg",
-  },
-  {
-    id: "electric-sleep",
-    title: "Electric Sleep",
-    artist: "Artist Name",
-    release: "Midnight Avenue",
-    duration: "3:02",
-    cover:
-      "https://i.pinimg.com/1200x/1a/6c/3d/1a6c3d7b8c9d0e1f2a3b4c5d6e7f8a9b.jpg",
-  },
-  {
-    id: "slow-motion",
-    title: "Slow Motion",
-    artist: "Artist Name",
-    release: "Midnight Avenue",
-    duration: "3:37",
-    cover:
-      "https://i.pinimg.com/1200x/7c/1f/2d/7c1f2d8b8b4f5d91f0c7c0a9a2b6d7e1.jpg",
-  },
-];
+const READY_SONGS: ReadySong[] = [];
+
+function getAssetExtension(
+  asset: { uri: string; fileName?: string | null; mimeType?: string | null },
+  fallback = "jpg",
+) {
+  const mimeType = asset.mimeType?.toLowerCase() ?? "";
+
+  if (mimeType.includes("gif")) {
+    return "gif";
+  }
+
+  if (mimeType.includes("png")) {
+    return "png";
+  }
+
+  if (mimeType.includes("webp")) {
+    return "webp";
+  }
+
+  if (mimeType.includes("mp4")) {
+    return "mp4";
+  }
+
+  const cleanUri = (asset.fileName || asset.uri).split("?")[0].split("#")[0];
+  const match = cleanUri.match(/\.([a-z0-9]+)$/i);
+  const extension = match?.[1]?.toLowerCase();
+
+  if (!extension) {
+    return fallback;
+  }
+
+  return extension === "jpeg" ? "jpg" : extension;
+}
+
+function getAssetDurationSeconds(asset: { duration?: number | null }) {
+  if (typeof asset.duration !== "number") {
+    return null;
+  }
+
+  return asset.duration > 1000 ? asset.duration / 1000 : asset.duration;
+}
 
 function clampScale(value: number) {
   return Math.max(0.25, Math.min(value, 5));
@@ -160,8 +153,11 @@ function getOverlayBaseSize(uri: string) {
 
 export default function CreatePostScreen() {
   const router = useRouter();
+  const { user } = useCurrentUser();
   const [baseUri, setBaseUri] = useState<string | null>(null);
   const [baseType, setBaseType] = useState<"image" | "video" | null>(null);
+  const [baseExtension, setBaseExtension] = useState("jpg");
+  const [baseDurationSeconds, setBaseDurationSeconds] = useState<number | null>(null);
   const [baseScale, setBaseScale] = useState(1);
   const baseScaleStart = useRef(1);
   const [overlayItems, setOverlayItems] = useState<OverlayItem[]>([]);
@@ -178,8 +174,11 @@ export default function CreatePostScreen() {
   const [songMenuVisible, setSongMenuVisible] = useState(false);
   const [songQuery, setSongQuery] = useState("");
   const [selectedSong, setSelectedSong] = useState<ReadySong | null>(null);
+  const [readySongs, setReadySongs] = useState<ReadySong[]>(READY_SONGS);
+  const [profileDisplayName, setProfileDisplayName] = useState("Perfil");
   const [captionHasWrap, setCaptionHasWrap] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [filter, setFilter] = useState<FilterType>("none");
   const dragUiOpacity = useRef(new Animated.Value(1)).current;
 
@@ -187,17 +186,93 @@ export default function CreatePostScreen() {
     const normalizedQuery = songQuery.trim().toLowerCase();
 
     if (!normalizedQuery) {
-      return READY_SONGS;
+      return readySongs;
     }
 
-    return READY_SONGS.filter((song) => {
+    return readySongs.filter((song) => {
       const haystacks = [song.title, song.artist, song.release].map((value) =>
         value.toLowerCase(),
       );
 
       return haystacks.some((value) => value.includes(normalizedQuery));
     });
-  }, [songQuery]);
+  }, [readySongs, songQuery]);
+
+  useEffect(() => {
+    let active = true;
+
+    getHomeContent()
+      .then((content) => {
+        if (!active) {
+          return;
+        }
+
+        const userProfilesById = new Map(
+          content.users.map((profile) => [profile.uid || profile.id, profile]),
+        );
+        const albumsById = new Map(
+          content.albums.map((album) => [album.id, album]),
+        );
+        const currentProfile = auth.currentUser?.uid
+          ? userProfilesById.get(auth.currentUser.uid)
+          : null;
+
+        setProfileDisplayName(
+          currentProfile?.displayName ||
+            currentProfile?.username ||
+            user?.displayName ||
+            "Perfil",
+        );
+
+        setReadySongs(
+          content.tracks
+            .filter(
+              (track) =>
+                "audioUrl" in track &&
+                typeof track.audioUrl === "string" &&
+                track.audioUrl.length > 0,
+            )
+            .map((track, index) => ({
+              id:
+                "id" in track && typeof track.id === "string"
+                  ? track.id
+                  : `track-${index}`,
+              title:
+                "title" in track && typeof track.title === "string"
+                  ? track.title
+                  : "Musica",
+              artist:
+                userProfilesById.get(track.userId)?.displayName ||
+                userProfilesById.get(track.userId)?.username ||
+                "Artista",
+              release:
+                typeof track.albumId === "string" && track.albumId.trim()
+                  ? albumsById.get(track.albumId)?.title || "Album"
+                  : "Single",
+              duration:
+                "durationSeconds" in track &&
+                typeof track.durationSeconds === "number"
+                  ? `${Math.floor(track.durationSeconds / 60)}:${String(
+                      track.durationSeconds % 60,
+                    ).padStart(2, "0")}`
+                  : "",
+              cover:
+                "coverUrl" in track && typeof track.coverUrl === "string"
+                  ? track.coverUrl
+                  : "",
+              shortVideoUrl:
+                "shortVideoUrl" in track && typeof track.shortVideoUrl === "string"
+                  ? track.shortVideoUrl
+                  : "",
+            })),
+        );
+      })
+      .catch((error) => console.log("LOAD READY SONGS ERROR:", error));
+
+    return () => {
+      active = false;
+    };
+  }, [user?.displayName]);
 
   useEffect(() => {
     setConfirmed(false);
@@ -347,34 +422,52 @@ export default function CreatePostScreen() {
 
   async function pickBaseMedia() {
     const asset = await pickLibraryAsset({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      mediaTypes: ["images", "videos"],
     });
 
     if (!asset) {
       return;
     }
 
+    const durationSeconds = getAssetDurationSeconds(asset);
+
+    if (
+      asset.type === "video" &&
+      durationSeconds !== null &&
+      durationSeconds > MAX_VIDEO_DURATION_SECONDS
+    ) {
+      Alert.alert(
+        "Video demasiado longo",
+        "Escolhe um video com no maximo 30 segundos.",
+      );
+      return;
+    }
+
     setBaseUri(asset.uri);
     setBaseType(asset.type === "video" ? "video" : "image");
+    setBaseExtension(getAssetExtension(asset, asset.type === "video" ? "mp4" : "jpg"));
+    setBaseDurationSeconds(asset.type === "video" ? durationSeconds : null);
     setBaseScale(1);
     baseScaleStart.current = 1;
   }
 
   async function pickOverlayImages() {
-    const uris = await pickLibraryImages({
+    const assets = await pickLibraryAssets({
       allowsMultipleSelection: true,
       orderedSelection: true,
+      mediaTypes: "images",
       selectionLimit: 10,
     });
 
-    if (uris.length === 0) {
+    if (assets.length === 0) {
       return;
     }
 
     const overlayEntries = await Promise.all(
-      uris.map(async (uri) => ({
-        uri,
-        ...(await getOverlayBaseSize(uri)),
+      assets.map(async (asset) => ({
+        uri: asset.uri,
+        extension: getAssetExtension(asset),
+        ...(await getOverlayBaseSize(asset.uri)),
       })),
     );
 
@@ -387,11 +480,12 @@ export default function CreatePostScreen() {
           entry.baseHeight,
         );
 
-        return {
-          id: `overlay-${Date.now()}-${current.length + index}`,
-          uri: entry.uri,
-          x: position.x,
-          y: position.y,
+          return {
+            id: `overlay-${Date.now()}-${current.length + index}`,
+            uri: entry.uri,
+            extension: entry.extension,
+            x: position.x,
+            y: position.y,
           scale: 1,
           baseWidth: entry.baseWidth,
           baseHeight: entry.baseHeight,
@@ -646,7 +740,15 @@ export default function CreatePostScreen() {
     ]);
   }
 
-  function handlePrimaryAction() {
+  async function handlePrimaryAction() {
+    return handlePublishAction();
+  }
+
+  async function handleLegacyPrimaryAction() {
+    if (publishing) {
+      return;
+    }
+
     if (!baseUri) {
       Alert.alert("Falta conteúdo", "Escolhe uma imagem ou um vídeo primeiro.");
       return;
@@ -663,6 +765,116 @@ export default function CreatePostScreen() {
         onPress: () => router.back(),
       },
     ]);
+  }
+
+  void handleLegacyPrimaryAction;
+
+  async function handlePublishAction() {
+    if (publishing) {
+      return;
+    }
+
+    if (!baseUri) {
+      Alert.alert("Falta conteudo", "Escolhe uma imagem ou um video primeiro.");
+      return;
+    }
+
+    if (baseType === "video" && baseExtension !== "mp4") {
+      Alert.alert("Video invalido", "Escolhe um video em formato MP4 com no maximo 30 segundos.");
+      return;
+    }
+
+    if (
+      baseType === "video" &&
+      baseDurationSeconds !== null &&
+      baseDurationSeconds > MAX_VIDEO_DURATION_SECONDS
+    ) {
+      Alert.alert(
+        "Video demasiado longo",
+        "Escolhe um video com no maximo 30 segundos.",
+      );
+      return;
+    }
+
+    if (!confirmed) {
+      setConfirmed(true);
+      return;
+    }
+
+    const currentUser = auth.currentUser;
+
+    if (!currentUser?.uid) {
+      Alert.alert("Sessao em falta", "Faz login outra vez para publicar.");
+      return;
+    }
+
+    try {
+      setPublishing(true);
+
+      const extension = baseType === "video" ? "mp4" : baseExtension;
+      const fallbackSongWithClip =
+        selectedSong ??
+        readySongs.find((song) => song.shortVideoUrl.trim().length > 0) ??
+        null;
+      const postId = await createPost({
+        userId: currentUser.uid,
+        caption: caption.trim(),
+        mediaType: baseType ?? "image",
+        mediaUrl: "",
+        thumbnailUrl: "",
+        linkedTrackId: fallbackSongWithClip?.id ?? "",
+        linkedTrackShortVideoUrl: fallbackSongWithClip?.shortVideoUrl ?? "",
+        linkedAlbumId: "",
+        category: "profile",
+        status: "published",
+      });
+      const upload = await uploadUriToStorage(
+        { kind: "postMedia", postId, extension },
+        baseUri,
+      );
+      const uploadedOverlays = await Promise.all(
+        overlayItems.map(async (overlay) => {
+          const overlayUpload = await uploadUriToStorage(
+            {
+              kind: "postOverlayMedia",
+              postId,
+              overlayId: overlay.id,
+              extension: overlay.extension,
+            },
+            overlay.uri,
+          );
+
+          return {
+            id: overlay.id,
+            mediaUrl: overlayUpload.downloadUrl,
+            mediaType: "image" as const,
+            x: overlay.x,
+            y: overlay.y,
+            scale: overlay.scale,
+            baseWidth: overlay.baseWidth,
+            baseHeight: overlay.baseHeight,
+            stageWidth: previewSize.width,
+            stageHeight: previewSize.height,
+          };
+        }),
+      );
+
+      await updatePostMedia(postId, {
+        mediaUrl: upload.downloadUrl,
+        thumbnailUrl: baseType === "image" ? upload.downloadUrl : "",
+        mediaScale: baseScale,
+        overlayMedia: uploadedOverlays,
+      });
+
+      Alert.alert("Post publicado", "O teu post ficou disponivel no perfil.", [
+        { text: "Fechar", onPress: () => router.back() },
+      ]);
+    } catch (error) {
+      console.log("CREATE POST ERROR:", error);
+      Alert.alert("Erro", "Nao foi possivel publicar o post agora.");
+    } finally {
+      setPublishing(false);
+    }
   }
 
   function handleSongSelect(song: ReadySong) {
@@ -685,7 +897,7 @@ export default function CreatePostScreen() {
 
           <TouchableOpacity onPress={handlePrimaryAction}>
             <Text style={styles.topText}>
-              {confirmed ? "Publicar" : "Feito"}
+              {publishing ? "A publicar..." : confirmed ? "Publicar" : "Feito"}
             </Text>
           </TouchableOpacity>
         </Animated.View>
@@ -713,14 +925,15 @@ export default function CreatePostScreen() {
                   </View>
                 </PinchGestureHandler>
               ) : (
-                <Video
-                  source={{ uri: baseUri }}
-                  style={styles.media}
-                  resizeMode={ResizeMode.CONTAIN}
-                  shouldPlay
-                  isLooping
-                  isMuted
-                />
+                <PinchGestureHandler
+                  shouldCancelWhenOutside={false}
+                  onGestureEvent={onBasePinchGesture}
+                  onHandlerStateChange={onBasePinchStateChange}
+                >
+                  <View style={styles.fullStretch}>
+                    <BaseVideoPreview uri={baseUri} scale={baseScale} />
+                  </View>
+                </PinchGestureHandler>
               )
             ) : (
               <TouchableOpacity
@@ -754,7 +967,9 @@ export default function CreatePostScreen() {
               </Text>
               <Text style={styles.musicSubtitle}>
                 {selectedSong
-                  ? `${selectedSong.artist} • ${selectedSong.release}`
+                  ? [selectedSong.artist, selectedSong.release]
+                      .filter((item) => item.trim().length > 0)
+                      .join(" • ")
                   : "Toca para pesquisar ou escolher uma pronta"}
               </Text>
             </TouchableOpacity>
@@ -833,14 +1048,13 @@ export default function CreatePostScreen() {
               onPress={() => setTyping(true)}
               activeOpacity={0.9}
             >
-              <Image
-                source={{
-                  uri: "https://i.pinimg.com/1200x/b9/e8/db/b9e8db33168a26c9ca697a05ddc80937.jpg",
-                }}
-                style={styles.avatar}
-              />
+              <View style={[styles.avatar, styles.avatarFallback]}>
+                <Ionicons name="person-outline" size={20} color="#fff" />
+              </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.username}>Artist Name</Text>
+                <Text style={styles.username}>
+                  {profileDisplayName}
+                </Text>
                 {caption.length === 0 ? (
                   <Text style={styles.hintText}>
                     Toca aqui para escrever a legenda
@@ -870,10 +1084,9 @@ export default function CreatePostScreen() {
               onPress={() => setSongMenuVisible(true)}
             >
               {selectedSong ? (
-                <Image
-                  source={{ uri: selectedSong.cover }}
+                <SongCover
+                  uri={selectedSong.cover}
                   style={styles.songCoverPreview}
-                  resizeMode="cover"
                 />
               ) : (
                 <Ionicons name="musical-notes-outline" size={22} color="#fff" />
@@ -977,10 +1190,9 @@ export default function CreatePostScreen() {
                           activeOpacity={0.86}
                           onPress={() => handleSongSelect(song)}
                         >
-                          <Image
-                            source={{ uri: song.cover }}
+                          <SongCover
+                            uri={song.cover}
                             style={styles.songRowCover}
-                            resizeMode="cover"
                           />
 
                           <View style={styles.songRowText}>
@@ -993,7 +1205,9 @@ export default function CreatePostScreen() {
                               {song.title}
                             </Text>
                             <Text style={styles.songRowSubtitle}>
-                              {song.artist} • {song.release}
+                              {[song.artist, song.release]
+                                .filter((item) => item.trim().length > 0)
+                                .join(" • ")}
                             </Text>
                           </View>
 
@@ -1040,6 +1254,43 @@ function Tool({
     <TouchableOpacity style={styles.tool} onPress={onPress}>
       <Ionicons name={icon} size={22} color="#fff" />
     </TouchableOpacity>
+  );
+}
+
+function BaseVideoPreview({ uri, scale = 1 }: { uri: string; scale?: number }) {
+  const player = useVideoPlayer(uri, (videoPlayer) => {
+    videoPlayer.loop = true;
+    videoPlayer.muted = true;
+    videoPlayer.play();
+  });
+
+  return (
+    <VideoView
+      player={player}
+      style={[styles.media, { transform: [{ scale }] }]}
+      contentFit="contain"
+      nativeControls={false}
+      allowsFullscreen={false}
+      pointerEvents="none"
+    />
+  );
+}
+
+function SongCover({
+  uri,
+  style,
+}: {
+  uri: string;
+  style: object;
+}) {
+  if (uri.trim().length > 0) {
+    return <Image source={{ uri }} style={style} resizeMode="cover" />;
+  }
+
+  return (
+    <View style={[style, styles.songCoverFallback]}>
+      <Ionicons name="musical-notes-outline" size={18} color="#fff" />
+    </View>
   );
 }
 
@@ -1136,7 +1387,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 14,
     right: 14,
-    bottom: 14,
+    bottom: 8,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
@@ -1152,7 +1403,17 @@ const styles = StyleSheet.create({
     width: 46,
     height: 46,
     borderRadius: 46,
-    marginTop: -15,
+    marginTop: -4,
+  },
+  avatarFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+  songCoverFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.14)",
   },
   username: {
     color: "#fff",

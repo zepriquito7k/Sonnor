@@ -40,7 +40,14 @@
         }
       ],
       "expo-font",
-      "expo-video"
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "A Sonnor precisa de acesso a tua galeria para escolher imagens do perfil."
+        }
+      ],
+      "expo-video",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

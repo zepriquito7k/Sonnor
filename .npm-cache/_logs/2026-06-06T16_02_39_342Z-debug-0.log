@@ -1,0 +1,25 @@
+0 verbose cli C:\Program Files\nodejs\node.exe C:\Users\Sonnor\AppData\Roaming\npm\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.16.0
+2 info using node@v24.15.0
+3 silly config load:file:C:\Users\Sonnor\AppData\Roaming\npm\node_modules\npm\npmrc
+4 silly config load:file:C:\CodeSonnor\Sonnor\.npmrc
+5 silly config load:file:C:\Users\Sonnor\.npmrc
+6 silly config load:file:C:\Users\Sonnor\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm install
+8 verbose argv "install" "--package-lock-only" "--ignore-scripts" "--cache" ".npm-cache"
+9 verbose logfile logs-max:10 dir:C:\CodeSonnor\Sonnor\.npm-cache\_logs\2026-06-06T16_02_39_342Z-
+10 verbose logfile C:\CodeSonnor\Sonnor\.npm-cache\_logs\2026-06-06T16_02_39_342Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+13 silly idealTree buildDeps
+14 silly fetch manifest @react-native-async-storage/async-storage@^1.18.1
+15 silly packumentCache full:https://registry.npmjs.org/@react-native-async-storage%2fasync-storage cache-miss
+16 http fetch GET https://registry.npmjs.org/@react-native-async-storage%2fasync-storage attempt 1 failed with EACCES
+17 http fetch GET https://registry.npmjs.org/@react-native-async-storage%2fasync-storage attempt 2 failed with EACCES
+18 http fetch GET https://registry.npmjs.org/@react-native-async-storage%2fasync-storage attempt 3 failed with EACCES
+19 http fetch GET 200 https://registry.npmjs.org/@react-native-async-storage%2fasync-storage 70223ms (cache stale)
+20 silly packumentCache full:https://registry.npmjs.org/@react-native-async-storage%2fasync-storage set size:421043 disposed:false
+21 silly fetch manifest react-native@^0.0.0-0 || >=0.60 <1.0
+22 silly packumentCache full:https://registry.npmjs.org/react-native cache-miss
+23 http fetch GET https://registry.npmjs.org/react-native attempt 1 failed with EACCES
+24 http fetch GET https://registry.npmjs.org/react-native attempt 2 failed with EACCES

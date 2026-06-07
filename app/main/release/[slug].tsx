@@ -1,7 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import { BlurView } from "expo-blur";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Image,
   Pressable,
@@ -10,327 +9,286 @@ import {
   Text,
   View,
 } from "react-native";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
+import { usePlayer, type Track } from "../../../context/PlayerContext";
+import { getAlbumContent, getLibraryContent } from "../../../firebase/contentClient";
 import {
-  findReleaseBySlug,
-  LibraryReleaseType,
-} from "../../../constants/musicLibrary";
-import { useResponsive } from "../../../utils/responsive";
+  removeAlbumFromLibrary,
+  saveAlbumToLibrary,
+} from "../../../firebase/settingsClient";
+import { useAsyncData } from "../../../hooks/useAsyncData";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import AnimatedSoundWave from "../components/AnimatedSoundWave";
 
-function getParamValue(value: string | string[] | undefined) {
+function valueOf(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function getValidReleaseType(value: string | undefined): LibraryReleaseType | undefined {
-  if (value === "Album" || value === "Single" || value === "EP") {
-    return value;
+function yearOf(value: unknown) {
+  if (value && typeof value === "object" && "toDate" in value) {
+    return (value as { toDate: () => Date }).toDate().getFullYear();
   }
-
-  return undefined;
+  return new Date().getFullYear();
 }
 
-function getTotalDuration(durations: string[]) {
-  const totalSeconds = durations.reduce((sum, duration) => {
-    const [minutesText, secondsText] = duration.split(":");
-    const minutes = Number(minutesText);
-    const seconds = Number(secondsText);
+function dateOf(value: unknown) {
+  if (value instanceof Date) return value;
+  if (value && typeof value === "object" && "toDate" in value) {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  if (value && typeof value === "object" && "seconds" in value) {
+    return new Date((value as { seconds: number }).seconds * 1000);
+  }
+  return null;
+}
 
-    if (Number.isNaN(minutes) || Number.isNaN(seconds)) {
-      return sum;
-    }
+function relativeReleaseDate(value: unknown) {
+  const date = dateOf(value);
+  if (!date) return String(yearOf(value));
 
-    return sum + minutes * 60 + seconds;
-  }, 0);
+  const days = Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000));
+  if (days === 0) return "Hoje";
+  if (days === 1) return "Ontem";
+  if (days < 14) return `${days} dias atras`;
+  if (days < 60) return `${Math.floor(days / 7)} semanas atras`;
+  if (days < 365) {
+    const months = Math.floor(days / 30);
+    return `${months} ${months === 1 ? "mes" : "meses"} atras`;
+  }
+  return String(date.getFullYear());
+}
 
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  return `${totalMinutes} min`;
+function CoverAccent({
+  cover,
+  style,
+}: {
+  cover: string;
+  style: object;
+}) {
+  return (
+    <View style={[styles.coverAccent, style]}>
+      {cover ? (
+        <Image
+          blurRadius={18}
+          resizeMode="cover"
+          source={{ uri: cover }}
+          style={styles.coverAccentImage}
+        />
+      ) : null}
+      <View style={styles.coverAccentShade} />
+    </View>
+  );
+}
+
+function AccentText({
+  children,
+  cover,
+  numberOfLines,
+  style,
+}: {
+  children: React.ReactNode;
+  cover: string;
+  numberOfLines?: number;
+  style: object;
+}) {
+  return (
+    <View style={styles.accentTextWrap}>
+      <CoverAccent cover={cover} style={StyleSheet.absoluteFillObject} />
+      <Text numberOfLines={numberOfLines} style={[style, styles.accentText]}>
+        {children}
+      </Text>
+    </View>
+  );
 }
 
 export default function ReleaseScreen() {
   const router = useRouter();
-  const { wp, hp, font } = useResponsive();
+  const { user } = useCurrentUser();
   const params = useLocalSearchParams<{
-    slug?: string | string[];
-    trackId?: string | string[];
-    title?: string | string[];
+    albumId?: string | string[];
     artist?: string | string[];
-    type?: string | string[];
-    year?: string | string[];
     cover?: string | string[];
-    heroImage?: string | string[];
-    releaseDate?: string | string[];
+    slug?: string | string[];
+    title?: string | string[];
   }>();
-  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(true);
+  const albumId = valueOf(params.albumId) ?? valueOf(params.slug) ?? "";
+  const loadAlbum = useCallback(() => getAlbumContent(albumId), [albumId]);
+  const { data, loading } = useAsyncData(loadAlbum, null);
+  const { playQueue, status, track: currentTrack } = usePlayer();
+  const [saved, setSaved] = useState(false);
 
-  const slug = getParamValue(params.slug);
-  const requestedTrackId = getParamValue(params.trackId);
-  const baseRelease = useMemo(() => findReleaseBySlug(slug), [slug]);
-
-  const release = useMemo(() => {
-    if (!baseRelease) {
-      return null;
-    }
-
-    const nextType = getValidReleaseType(getParamValue(params.type));
-    const yearValue = Number(getParamValue(params.year));
-
-    return {
-      ...baseRelease,
-      title: getParamValue(params.title) ?? baseRelease.title,
-      artist: getParamValue(params.artist) ?? baseRelease.artist,
-      type: nextType ?? baseRelease.type,
-      year: Number.isFinite(yearValue) ? yearValue : baseRelease.year,
-      cover: getParamValue(params.cover) ?? baseRelease.cover,
-      heroImage: getParamValue(params.heroImage) ?? baseRelease.heroImage,
-      releaseDate: getParamValue(params.releaseDate) ?? baseRelease.releaseDate,
-    };
-  }, [baseRelease, params.artist, params.cover, params.heroImage, params.releaseDate, params.title, params.type, params.year]);
-
+  const album = data?.album;
+  const artist =
+    data?.user?.displayName ||
+    data?.user?.username ||
+    valueOf(params.artist) ||
+    "Sonnor";
+  const avatar = data?.user?.avatarUrl || "";
+  const title = album?.title || valueOf(params.title) || "Album";
+  const cover = album?.coverUrl || valueOf(params.cover) || "";
+  const queue: Track[] =
+    data?.tracks.map((item) => ({
+      albumId,
+      artist,
+      cover: item.coverUrl || cover,
+      genre: item.genre,
+      id: item.id,
+      lyrics: item.lyrics,
+      shortVideo: item.shortVideoUrl,
+      source: "release",
+      title: item.title,
+      uri: item.audioUrl,
+    })) ?? [];
+  const isPlaying = status?.isLoaded && status.isPlaying;
   useEffect(() => {
-    if (!release) {
-      setSelectedTrackId(null);
-      return;
-    }
+    let active = true;
+    if (!user?.uid) return;
 
-    const nextTrackId =
-      release.tracks.find((track) => track.id === requestedTrackId)?.id ??
-      release.tracks[0]?.id ??
-      null;
+    getLibraryContent(user.uid).then((library) => {
+      if (active) setSaved(library.albums.some((item) => item.id === albumId));
+    });
 
-    setSelectedTrackId(nextTrackId);
-    setIsPlaying(true);
-  }, [release, requestedTrackId]);
+    return () => {
+      active = false;
+    };
+  }, [albumId, user?.uid]);
 
-  const selectedTrack =
-    release?.tracks.find((track) => track.id === selectedTrackId) ?? null;
-  const totalDuration = release
-    ? getTotalDuration(release.tracks.map((track) => track.duration))
-    : "0 min";
-
-  function handleTrackPress(trackId: string) {
-    if (selectedTrackId === trackId) {
-      setIsPlaying((current) => !current);
-      return;
-    }
-
-    setSelectedTrackId(trackId);
-    setIsPlaying(true);
+  async function playFrom(index: number) {
+    await playQueue(queue, index);
   }
 
-  function handlePlayPress() {
-    if (!release) {
-      return;
-    }
+  async function toggleSaved() {
+    if (!user?.uid) return;
+    const next = !saved;
+    setSaved(next);
 
-    if (!selectedTrackId) {
-      setSelectedTrackId(release.tracks[0]?.id ?? null);
-      setIsPlaying(true);
-      return;
+    try {
+      if (next) await saveAlbumToLibrary(user.uid, albumId);
+      else await removeAlbumFromLibrary(user.uid, albumId);
+    } catch {
+      setSaved(!next);
     }
-
-    setIsPlaying((current) => !current);
   }
 
-  function handleShufflePress() {
-    if (!release || release.tracks.length === 0) {
-      return;
-    }
-
-    const randomIndex = Math.floor(Math.random() * release.tracks.length);
-    setSelectedTrackId(release.tracks[randomIndex]?.id ?? release.tracks[0].id);
-    setIsPlaying(true);
+  function openArtistProfile() {
+    if (!album?.userId) return;
+    router.push({ pathname: "/main/profile", params: { userId: album.userId } });
   }
 
-  if (!release) {
+  if (loading) {
+    return <View style={styles.center}><Text style={styles.muted}>A carregar album...</Text></View>;
+  }
+
+  if (!album) {
     return (
-      <View style={styles.fallbackContainer}>
-        <Pressable style={styles.backButton} onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={22} color="#fff" />
-          <Text style={styles.backButtonText}>Voltar</Text>
-        </Pressable>
-        <Text style={styles.fallbackTitle}>Release nao encontrado</Text>
-        <Text style={styles.fallbackText}>
-          Nao encontrei este album ou musica na biblioteca atual.
-        </Text>
+      <View style={styles.center}>
+        <Text style={styles.title}>Album nao encontrado</Text>
+        <Pressable onPress={() => router.back()}><Text style={styles.backText}>Voltar</Text></Pressable>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <Image source={{ uri: release.heroImage }} style={styles.backgroundImage} />
-      <View style={styles.backgroundScrim} />
-      <BlurView tint="dark" intensity={70} style={StyleSheet.absoluteFillObject} />
-
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={[
-          styles.scrollContent,
-          {
-            paddingTop: hp(6),
-            paddingBottom: hp(16),
-            paddingHorizontal: wp(6),
-          },
-        ]}
-      >
-        <View style={styles.headerRow}>
-          <Pressable style={styles.iconButton} onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={24} color="#fff" />
-          </Pressable>
-
-          <Pressable style={styles.iconButton}>
-            <Ionicons name="ellipsis-horizontal" size={22} color="#fff" />
-          </Pressable>
-        </View>
-
-        <View style={styles.heroBlock}>
-          <Image
-            source={{ uri: release.cover }}
-            style={[
-              styles.coverImage,
-              {
-                width: wp(66),
-                height: wp(66),
-                borderRadius: wp(5),
-              },
-            ]}
-          />
-
-          <Text style={[styles.releaseTitle, { fontSize: font(30), marginTop: hp(3) }]}>
-            {release.title}
-          </Text>
-          <Text style={[styles.releaseArtist, { fontSize: font(16), marginTop: hp(0.8) }]}>
-            {release.artist}
-          </Text>
-
-          <View style={[styles.metaRow, { marginTop: hp(2) }]}>
-            <View style={styles.metaPill}>
-              <Text style={[styles.metaPillText, { fontSize: font(12) }]}>
-                {release.type}
-              </Text>
-            </View>
-            <View style={styles.metaPill}>
-              <Text style={[styles.metaPillText, { fontSize: font(12) }]}>
-                {release.year}
-              </Text>
-            </View>
-            <View style={styles.metaPill}>
-              <Text style={[styles.metaPillText, { fontSize: font(12) }]}>
-                {release.tracks.length} faixas
-              </Text>
-            </View>
-          </View>
-
-          <Text style={[styles.releaseMeta, { fontSize: font(13), marginTop: hp(1.6) }]}>
-            Lancado em {release.releaseDate} • {totalDuration}
-          </Text>
-        </View>
-
-        <View style={[styles.actionRow, { marginTop: hp(3.2), gap: wp(3) }]}>
-          <Pressable
-            style={[styles.primaryAction, { minHeight: hp(6.2) }]}
-            onPress={handlePlayPress}
-          >
-            <Ionicons
-              name={isPlaying ? "pause" : "play"}
-              size={20}
-              color="#060606"
+    <View style={styles.root}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <View style={styles.heroGradient}>
+          {cover ? (
+            <Image
+              blurRadius={20}
+              resizeMode="cover"
+              source={{ uri: cover }}
+              style={styles.heroColorSample}
             />
-            <Text style={[styles.primaryActionText, { fontSize: font(15) }]}>
-              {isPlaying ? "Pausar" : "Reproduzir"}
-            </Text>
+          ) : null}
+          <Svg height="100%" width="100%">
+            <Defs>
+              <LinearGradient id="albumFade" x1="0" x2="0" y1="0" y2="1">
+                <Stop offset="0" stopColor="#000000" stopOpacity="0.08" />
+                <Stop offset="0.38" stopColor="#000000" stopOpacity="0.52" />
+                <Stop offset="0.64" stopColor="#000000" stopOpacity="0.94" />
+                <Stop offset="0.8" stopColor="#000000" />
+                <Stop offset="1" stopColor="#000000" />
+              </LinearGradient>
+            </Defs>
+            <Rect fill="url(#albumFade)" height="100%" width="100%" />
+          </Svg>
+        </View>
+
+        <View style={styles.topRow}>
+          <Pressable style={styles.topButton} onPress={() => router.back()}>
+            <Ionicons name="chevron-back" size={27} color="#fff" />
           </Pressable>
-
-          <Pressable
-            style={[styles.secondaryAction, { minHeight: hp(6.2) }]}
-            onPress={handleShufflePress}
-          >
-            <Ionicons name="shuffle" size={18} color="#fff" />
-            <Text style={[styles.secondaryActionText, { fontSize: font(15) }]}>
-              Aleatorio
-            </Text>
+          <Pressable style={styles.topButton}>
+            <Ionicons name="ellipsis-horizontal" size={24} color="#fff" />
           </Pressable>
         </View>
 
-        <View style={[styles.nowPlayingCard, { marginTop: hp(2.8), padding: wp(4.5) }]}>
-          <Text style={[styles.nowPlayingLabel, { fontSize: font(11) }]}>
-            {isPlaying ? "A tocar agora" : "Faixa selecionada"}
-          </Text>
-          <Text style={[styles.nowPlayingTitle, { fontSize: font(19), marginTop: hp(0.6) }]}>
-            {selectedTrack?.title ?? "Escolhe uma faixa"}
-          </Text>
-          <Text
-            style={[styles.nowPlayingText, { fontSize: font(13), marginTop: hp(0.8) }]}
-          >
-            {selectedTrack?.note ??
-              "Toca numa faixa da lista para abrir o projeto com a musica certa pronta a tocar."}
+        <View style={styles.heroContent}>
+          {cover ? <Image source={{ uri: cover }} style={styles.cover} /> : <View style={styles.cover} />}
+
+          <Text style={styles.title}>{title}</Text>
+          <Pressable style={styles.artistRow} onPress={openArtistProfile}>
+            {avatar ? (
+              <Image source={{ uri: avatar }} style={styles.artistAvatar} />
+            ) : (
+              <View style={styles.artistAvatarFallback}>
+                <Ionicons name="person" size={15} color="#fff" />
+              </View>
+            )}
+            <Text style={styles.artist}>{artist}</Text>
+          </Pressable>
+          <Text style={styles.meta}>
+            {(album.type || "album").replace(/^./, (letter) => letter.toUpperCase())} · {relativeReleaseDate(album.releaseDate ?? album.createdAt)} · {data.tracks.length} faixas
           </Text>
         </View>
 
-        <View style={[styles.sectionHeader, { marginTop: hp(4.2) }]}>
-          <Text style={[styles.sectionTitle, { fontSize: font(22) }]}>Faixas</Text>
-          <Text style={[styles.sectionHint, { fontSize: font(12) }]}>
-            Lista do release
-          </Text>
+        <View style={styles.actions}>
+          <Pressable style={styles.actionButton} onPress={toggleSaved}>
+            {saved ? <CoverAccent cover={cover} style={styles.savedAccent} /> : null}
+            <Ionicons name={saved ? "checkmark-circle" : "add-circle-outline"} size={30} color={saved ? "#fff" : "#c1cbc8"} />
+          </Pressable>
+          <View style={styles.actionSpacer} />
+          <Pressable style={styles.actionButton}>
+            <Ionicons name="shuffle" size={28} color="#c1cbc8" />
+          </Pressable>
+          <Pressable style={({ pressed }) => [styles.playButton, pressed ? styles.playButtonPressed : null]} onPress={() => playFrom(0)}>
+            <CoverAccent cover={cover} style={StyleSheet.absoluteFillObject} />
+            <Ionicons name="play" size={30} color="#fff" />
+          </Pressable>
         </View>
 
-        <View style={[styles.trackList, { marginTop: hp(1.8) }]}>
-          {release.tracks.map((track, index) => {
-            const isActive = selectedTrackId === track.id;
-            const isActiveAndPlaying = isActive && isPlaying;
-
+        <View style={styles.trackList}>
+          {data.tracks.map((item, index) => {
+            const active = currentTrack?.id === item.id;
             return (
-              <Pressable
-                key={track.id}
-                style={[
-                  styles.trackRow,
-                  { paddingVertical: hp(1.8), paddingHorizontal: wp(4) },
-                  isActive && styles.trackRowActive,
-                ]}
-                onPress={() => handleTrackPress(track.id)}
-              >
-                <View style={styles.trackIndexBox}>
-                  {isActiveAndPlaying ? (
-                    <Ionicons name="pause-circle" size={24} color="#fff" />
-                  ) : isActive ? (
-                    <Ionicons name="play-circle" size={24} color="#fff" />
+              <Pressable key={item.id} style={styles.trackRow} onPress={() => playFrom(index)}>
+                <View style={styles.trackText}>
+                  {active ? (
+                    <View style={styles.activeTitleRow}>
+                      <AccentText cover={cover} numberOfLines={1} style={styles.trackTitle}>
+                        {item.title}
+                      </AccentText>
+                      {isPlaying ? <AnimatedSoundWave /> : null}
+                    </View>
                   ) : (
-                    <Text style={[styles.trackIndex, { fontSize: font(14) }]}>
-                      {index + 1}
-                    </Text>
+                    <Text numberOfLines={1} style={styles.trackTitle}>{item.title}</Text>
                   )}
+                  <View style={styles.trackMetaRow}>
+                    {item.explicit ? <View style={styles.explicitBadge}><Text style={styles.explicitText}>E</Text></View> : null}
+                    {active ? (
+                      <AccentText cover={cover} numberOfLines={1} style={styles.trackArtist}>
+                        {artist}
+                      </AccentText>
+                    ) : (
+                      <Text numberOfLines={1} style={styles.trackArtist}>{artist}</Text>
+                    )}
+                  </View>
                 </View>
-
-                <View style={styles.trackTextBlock}>
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      styles.trackTitle,
-                      { fontSize: font(15) },
-                      isActive && styles.trackTitleActive,
-                    ]}
-                  >
-                    {track.title}
-                  </Text>
-                  <Text numberOfLines={1} style={[styles.trackSubtitle, { fontSize: font(12) }]}>
-                    {track.note ?? release.artist}
-                  </Text>
-                </View>
-
-                <Text style={[styles.trackDuration, { fontSize: font(13) }]}>
-                  {track.duration}
-                </Text>
+                <Ionicons name="ellipsis-horizontal" size={21} color="#858b89" />
               </Pressable>
             );
           })}
-        </View>
-
-        <View style={[styles.aboutCard, { marginTop: hp(3.5), padding: wp(4.5) }]}>
-          <Text style={[styles.aboutTitle, { fontSize: font(18) }]}>Sobre o projeto</Text>
-          <Text style={[styles.aboutText, { fontSize: font(14), marginTop: hp(1.2) }]}>
-            {release.description}
-          </Text>
         </View>
       </ScrollView>
     </View>
@@ -338,219 +296,60 @@ export default function ReleaseScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#030303",
+  root: { backgroundColor: "#000000", flex: 1 },
+  content: { paddingBottom: 300, paddingHorizontal: 22, paddingTop: 54 },
+  heroGradient: { height: 660, left: -22, position: "absolute", right: -22, top: 0 },
+  heroColorSample: {
+    height: 8,
+    left: "50%",
+    opacity: 1,
+    position: "absolute",
+    top: 120,
+    transform: [{ scale: 110 }],
+    width: 8,
   },
-  backgroundImage: {
+  topRow: { flexDirection: "row", justifyContent: "space-between" },
+  topButton: { alignItems: "center", height: 42, justifyContent: "center", width: 42 },
+  heroContent: { minHeight: 418 },
+  cover: { alignSelf: "center", backgroundColor: "#17201d", borderRadius: 18, height: 250, marginTop: 14, width: 250 },
+  title: { color: "#fff", fontSize: 32, fontWeight: "900", letterSpacing: -0.7, marginTop: 25 },
+  artistRow: { alignItems: "center", flexDirection: "row", gap: 9, marginTop: 14 },
+  artistAvatar: { borderRadius: 14, height: 28, width: 28 },
+  artistAvatarFallback: { alignItems: "center", backgroundColor: "#18372f", borderRadius: 14, height: 28, justifyContent: "center", width: 28 },
+  artist: { color: "#fff", fontSize: 15, fontWeight: "800" },
+  meta: { color: "rgba(255,255,255,0.66)", fontSize: 13, fontWeight: "700", marginTop: 9 },
+  actions: { alignItems: "center", flexDirection: "row", gap: 14, marginTop: 4 },
+  actionButton: { alignItems: "center", height: 42, justifyContent: "center", width: 36 },
+  actionSpacer: { flex: 1 },
+  playButton: { alignItems: "center", backgroundColor: "#171717", borderRadius: 29, height: 58, justifyContent: "center", overflow: "hidden", width: 58 },
+  playButtonPressed: { opacity: 0.46, transform: [{ scale: 0.92 }] },
+  coverAccent: { overflow: "hidden" },
+  coverAccentImage: {
     ...StyleSheet.absoluteFillObject,
-    opacity: 0.34,
+    transform: [{ scale: 2.8 }],
   },
-  backgroundScrim: {
+  coverAccentShade: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.58)",
+    backgroundColor: "rgba(0,0,0,0.18)",
   },
-  scrollContent: {
-    flexGrow: 1,
+  savedAccent: {
+    position: "absolute",
+    width: 34,
+    height: 34,
+    borderRadius: 17,
   },
-  headerRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  iconButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  heroBlock: {
-    alignItems: "center",
-  },
-  coverImage: {
-    backgroundColor: "#111",
-  },
-  releaseTitle: {
-    color: "#fff",
-    fontWeight: "800",
-    textAlign: "center",
-  },
-  releaseArtist: {
-    color: "#d3d3d3",
-    fontWeight: "500",
-    textAlign: "center",
-  },
-  metaRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "center",
-    gap: 10,
-  },
-  metaPill: {
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
-  },
-  metaPillText: {
-    color: "#f4f4f4",
-    fontWeight: "700",
-  },
-  releaseMeta: {
-    color: "#9f9f9f",
-    textAlign: "center",
-  },
-  actionRow: {
-    flexDirection: "row",
-  },
-  primaryAction: {
-    flex: 1,
-    borderRadius: 18,
-    backgroundColor: "#ffffff",
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 10,
-  },
-  primaryActionText: {
-    color: "#050505",
-    fontWeight: "800",
-  },
-  secondaryAction: {
-    flex: 1,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 10,
-  },
-  secondaryActionText: {
-    color: "#fff",
-    fontWeight: "700",
-  },
-  nowPlayingCard: {
-    borderRadius: 24,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-  nowPlayingLabel: {
-    color: "#9e9e9e",
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-    fontWeight: "700",
-  },
-  nowPlayingTitle: {
-    color: "#fff",
-    fontWeight: "800",
-  },
-  nowPlayingText: {
-    color: "#d3d3d3",
-    lineHeight: 20,
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  sectionTitle: {
-    color: "#fff",
-    fontWeight: "800",
-  },
-  sectionHint: {
-    color: "#8d8d8d",
-    fontWeight: "600",
-  },
-  trackList: {
-    gap: 10,
-  },
-  trackRow: {
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.05)",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-  },
-  trackRowActive: {
-    backgroundColor: "rgba(255,255,255,0.14)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-  },
-  trackIndexBox: {
-    width: 28,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  trackIndex: {
-    color: "#9a9a9a",
-    fontWeight: "700",
-  },
-  trackTextBlock: {
-    flex: 1,
-  },
-  trackTitle: {
-    color: "#f4f4f4",
-    fontWeight: "700",
-  },
-  trackTitleActive: {
-    color: "#fff",
-  },
-  trackSubtitle: {
-    color: "#999",
-    marginTop: 4,
-  },
-  trackDuration: {
-    color: "#cfcfcf",
-    fontWeight: "600",
-  },
-  aboutCard: {
-    borderRadius: 24,
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
-  },
-  aboutTitle: {
-    color: "#fff",
-    fontWeight: "800",
-  },
-  aboutText: {
-    color: "#d6d6d6",
-    lineHeight: 22,
-  },
-  fallbackContainer: {
-    flex: 1,
-    backgroundColor: "#050505",
-    paddingHorizontal: 24,
-    paddingTop: 72,
-  },
-  backButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    gap: 8,
-    marginBottom: 24,
-  },
-  backButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  fallbackTitle: {
-    color: "#fff",
-    fontSize: 28,
-    fontWeight: "800",
-  },
-  fallbackText: {
-    color: "#b8b8b8",
-    fontSize: 15,
-    lineHeight: 22,
-    marginTop: 12,
-  },
+  accentTextWrap: { alignSelf: "flex-start", overflow: "hidden" },
+  accentText: { color: "#fff", paddingHorizontal: 4, paddingVertical: 1 },
+  trackList: { marginTop: 18 },
+  trackRow: { alignItems: "center", flexDirection: "row", gap: 16, minHeight: 68, paddingVertical: 7 },
+  trackText: { flex: 1 },
+  activeTitleRow: { flexDirection: "row", alignItems: "center", gap: 9 },
+  trackTitle: { color: "#f3f5f4", fontSize: 17, fontWeight: "700" },
+  trackMetaRow: { alignItems: "center", flexDirection: "row", gap: 7, marginTop: 7 },
+  trackArtist: { color: "#9da5a2", flex: 1, fontSize: 14, fontWeight: "600" },
+  explicitBadge: { alignItems: "center", backgroundColor: "#a5aaa8", borderRadius: 3, height: 15, justifyContent: "center", width: 15 },
+  explicitText: { color: "#111", fontSize: 10, fontWeight: "900" },
+  center: { alignItems: "center", backgroundColor: "#080a09", flex: 1, justifyContent: "center", padding: 24 },
+  muted: { color: "#9da5a2" },
+  backText: { color: "#fff", marginTop: 18 },
 });

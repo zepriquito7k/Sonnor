@@ -217,7 +217,7 @@ export default function NewPasswordScreen() {
           </View>
         </View>
 
-        {/* BOTÃO FINAL */}
+        {/* BOTAO FINAL */}
         <TouchableOpacity
           style={[
             styles.submitButton,

@@ -34,15 +34,37 @@ export default function VerifyMail() {
   ];
 
   function handleCodeChange(value: string, index: number) {
-    if (value.length > 1) value = value.slice(-1);
-
     const updated = [...codes];
-    updated[index] = value;
+    const digits = value.replace(/\D/g, "");
+
+    if (digits.length > 1) {
+      digits
+        .slice(0, 4 - index)
+        .split("")
+        .forEach((digit, offset) => {
+          updated[index + offset] = digit;
+        });
+
+      setCodes(updated);
+      setErrorCode(false);
+
+      const nextEmptyIndex = updated.findIndex((digit) => digit === "");
+      if (updated.every((n) => n !== "")) {
+        Keyboard.dismiss();
+      } else if (nextEmptyIndex !== -1) {
+        inputsRef[nextEmptyIndex].current?.focus();
+      }
+
+      return;
+    }
+
+    const digit = digits.slice(-1);
+    updated[index] = digit;
     setCodes(updated);
     setErrorCode(false);
 
-    if (value && index < 3) inputsRef[index + 1].current?.focus();
-    if (!value && index > 0) inputsRef[index - 1].current?.focus();
+    if (digit && index < 3) inputsRef[index + 1].current?.focus();
+    if (!digit && index > 0) inputsRef[index - 1].current?.focus();
 
     if (updated.every((n) => n !== "")) Keyboard.dismiss();
   }
@@ -125,7 +147,9 @@ export default function VerifyMail() {
             key={index}
             ref={inputsRef[index]}
             keyboardType="number-pad"
-            maxLength={1}
+            maxLength={4}
+            autoComplete="one-time-code"
+            textContentType="oneTimeCode"
             value={codes[index]}
             onChangeText={(t) => handleCodeChange(t, index)}
             style={[

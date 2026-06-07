@@ -4,7 +4,8 @@ import * as ImagePicker from "expo-image-picker";
 type PickMediaOptions = {
   allowsEditing?: boolean;
   allowsMultipleSelection?: boolean;
-  mediaTypes?: ImagePicker.MediaTypeOptions;
+  aspect?: [number, number];
+  mediaTypes?: ImagePicker.MediaType | ImagePicker.MediaType[];
   orderedSelection?: boolean;
   quality?: number;
   selectionLimit?: number;
@@ -38,13 +39,19 @@ export async function pickLibraryAssets(options?: PickMediaOptions) {
     return [];
   }
 
+  const allowsMultipleSelection = options?.allowsMultipleSelection ?? false;
   const result = await ImagePicker.launchImageLibraryAsync({
     allowsEditing: options?.allowsEditing ?? false,
-    allowsMultipleSelection: options?.allowsMultipleSelection ?? false,
-    mediaTypes: options?.mediaTypes ?? ImagePicker.MediaTypeOptions.Images,
-    orderedSelection: options?.orderedSelection ?? true,
+    allowsMultipleSelection,
+    aspect: options?.aspect,
+    mediaTypes: options?.mediaTypes ?? "images",
     quality: options?.quality ?? 1,
-    selectionLimit: options?.selectionLimit ?? 0,
+    ...(allowsMultipleSelection
+      ? {
+          orderedSelection: options?.orderedSelection ?? true,
+          selectionLimit: options?.selectionLimit ?? 0,
+        }
+      : {}),
   });
 
   if (result.canceled || result.assets.length === 0) {
@@ -57,7 +64,7 @@ export async function pickLibraryAssets(options?: PickMediaOptions) {
 export async function pickLibraryImage(options?: PickMediaOptions) {
   const asset = await pickLibraryAsset({
     ...options,
-    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    mediaTypes: "images",
   });
 
   return asset?.uri ?? null;
@@ -66,7 +73,7 @@ export async function pickLibraryImage(options?: PickMediaOptions) {
 export async function pickLibraryImages(options?: PickMediaOptions) {
   const assets = await pickLibraryAssets({
     ...options,
-    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    mediaTypes: "images",
   });
 
   return assets.map((asset) => asset.uri);

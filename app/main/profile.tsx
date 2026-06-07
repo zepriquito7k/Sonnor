@@ -1,11 +1,12 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { VideoView, useVideoPlayer } from "expo-video";
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Animated,
   Image,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -15,234 +16,196 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
-import { buildReleaseRoute, findMusicMatch } from "../../constants/musicLibrary";
-import { pickLibraryImage } from "../../utils/mediaPicker";
+import { usePlayer, type Track } from "../../context/PlayerContext";
+import { getAlbumContent, getProfileContent } from "../../firebase/contentClient";
+import { deletePost } from "../../firebase/contentMutations";
+import type { PostDocument, UserDocument } from "../../firebase/schema";
+import {
+  countUserFollowers,
+  createFollow,
+  isFollowingUser,
+  removeFollow,
+} from "../../firebase/socialClient";
+import {
+  uploadUriToStorage,
+  withCacheBust,
+} from "../../firebase/storageClient";
+import { updateUserProfile } from "../../firebase/userProfile";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { pickLibraryAsset } from "../../utils/mediaPicker";
 import { useResponsive } from "../../utils/responsive";
 
-type EditPanelType = "albums" | "posts" | null;
+type TrackItem = {
+  id: string;
+  albumId?: string;
+  title: string;
+  coverUrl: string;
+  shortVideoUrl: string;
+  genre: string;
+  lyrics: string;
+  audioUrl: string;
+  likesCount: number;
+  playsCount: number;
+  releaseDate?: unknown;
+};
 
 type AlbumItem = {
-  id: number;
-  name: string;
-  year: number;
-  type: "Album" | "Single";
-  cover: string;
-  background: string | null;
-  releaseDate: string;
-  releaseTime: string;
-  lastEditedAt: string | null;
-  removedAt: string | null;
-  removalReason: string | null;
+  id: string;
+  title: string;
+  coverUrl: string;
+  releaseDate?: unknown;
+  preReleaseEnabled: boolean;
+  preReleaseHighlightUntil?: unknown;
+  status: string;
+  trackIds: string[];
+  type: "album" | "single" | "ep";
 };
 
 type PostItem = {
-  id: number;
-  title: string;
+  id: string;
+  ownerId: string;
   caption: string;
-  image: string;
-  date: string;
-  time: string;
-  lastEditedAt: string | null;
-  removedAt: string | null;
-  removalReason: string | null;
+  mediaType: "image" | "video";
+  mediaUrl: string;
+  thumbnailUrl: string;
+  mediaScale: number;
+  likesCount: number;
+  linkedTrackId: string;
+  linkedTrackTitle: string;
+  linkedTrackCoverUrl: string;
+  authorName: string;
+  authorAvatarUrl: string;
+  overlayMedia: NonNullable<PostDocument["overlayMedia"]>;
 };
 
-type PreviewItem = {
+type MerchProduct = {
+  id: string;
   title: string;
-  subtitle: string;
-  image: string;
+  imageUrl: string;
+  linkUrl: string;
+  price?: string;
+  currency?: string;
   description?: string;
 };
 
-const DEFAULT_BANNER_URI =
-  "https://i.pinimg.com/1200x/b9/e8/db/b9e8db33168a26c9ca697a05ddc80937.jpg";
+type MerchGalleryItem = {
+  id: string;
+  mediaUrl: string;
+  mediaType: "image" | "video";
+  caption?: string;
+};
 
-const INITIAL_ALBUMS: AlbumItem[] = [
-  {
-    id: 1,
-    name: "Neon Dreams",
-    year: 2026,
-    type: "Album",
-    cover:
-      "https://i.pinimg.com/1200x/f5/8d/79/f58d797b9db7094bed77987ec32cc954.jpg",
-    background:
-      "https://i.pinimg.com/1200x/f4/2f/59/f42f595b9b6b0b9cc8269e4a84364707.jpg",
-    releaseDate: "16/04/2026",
-    releaseTime: "22:30",
-    lastEditedAt: null,
-    removedAt: null,
-    removalReason: null,
-  },
-  {
-    id: 2,
-    name: "Midnight Avenue",
-    year: 2025,
-    type: "Album",
-    cover:
-      "https://i.pinimg.com/1200x/6b/87/62/6b8762d66ffc9220294524e16485b4e0.jpg",
-    background:
-      "https://i.pinimg.com/1200x/8d/dc/29/8ddc29e3bbdadf33fc22ca5ffa23d59d.jpg",
-    releaseDate: "08/11/2025",
-    releaseTime: "00:15",
-    lastEditedAt: "2025-05-10T12:00:00.000Z",
-    removedAt: null,
-    removalReason: null,
-  },
-  {
-    id: 3,
-    name: "Blue Motel",
-    year: 2024,
-    type: "Single",
-    cover:
-      "https://i.pinimg.com/1200x/8f/2a/0b/8f2a0b7b1f8a4d7f1b3c2d9e0f1a2b3c.jpg",
-    background:
-      "https://i.pinimg.com/1200x/1a/6c/3d/1a6c3d7b8c9d0e1f2a3b4c5d6e7f8a9b.jpg",
-    releaseDate: "03/06/2024",
-    releaseTime: "18:45",
-    lastEditedAt: null,
-    removedAt: null,
-    removalReason: null,
-  },
-  {
-    id: 4,
-    name: "After Hours Tape",
-    year: 2023,
-    type: "Album",
-    cover:
-      "https://i.pinimg.com/1200x/2f/6b/4c/2f6b4c0e5b92c4f1b85c9b7d1f3c1a0e.jpg",
-    background:
-      "https://i.pinimg.com/1200x/4e/5f/6a/4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b.jpg",
-    releaseDate: "27/10/2023",
-    releaseTime: "20:00",
-    lastEditedAt: null,
-    removedAt: null,
-    removalReason: null,
-  },
-  {
-    id: 5,
-    name: "Velvet Echo",
-    year: 2022,
-    type: "Single",
-    cover:
-      "https://i.pinimg.com/1200x/7c/1f/2d/7c1f2d8b8b4f5d91f0c7c0a9a2b6d7e1.jpg",
-    background:
-      "https://i.pinimg.com/1200x/7a/5d/2d/7a5d2db7c7a21c7e0f7b41a2d9f0a1b2.jpg",
-    releaseDate: "05/01/2022",
-    releaseTime: "12:10",
-    lastEditedAt: null,
-    removedAt: null,
-    removalReason: null,
-  },
-];
+type ProfileExtras = UserDocument & {
+  spotifyUrl?: string;
+  merchLogoUrl?: string;
+  merchName?: string;
+  shopUrl?: string;
+  merchProducts?: MerchProduct[];
+  merchGallery?: MerchGalleryItem[];
+};
 
-const INITIAL_POSTS: PostItem[] = [
-  {
-    id: 1,
-    title: "Drop teaser",
-    caption: "Preview visual do novo drop com identidade mais escura.",
-    image:
-      "https://i.pinimg.com/1200x/f4/2f/59/f42f595b9b6b0b9cc8269e4a84364707.jpg",
-    date: "20/04/2026",
-    time: "19:20",
-    lastEditedAt: null,
-    removedAt: null,
-    removalReason: null,
-  },
-  {
-    id: 2,
-    title: "Studio night",
-    caption: "Sessão no estúdio para fechar a narrativa desta era.",
-    image:
-      "https://i.pinimg.com/1200x/6b/87/62/6b8762d66ffc9220294524e16485b4e0.jpg",
-    date: "11/04/2026",
-    time: "23:50",
-    lastEditedAt: null,
-    removedAt: null,
-    removalReason: null,
-  },
-  {
-    id: 3,
-    title: "Backstage",
-    caption: "Momento rápido dos bastidores antes do ensaio geral.",
-    image:
-      "https://i.pinimg.com/1200x/8d/dc/29/8ddc29e3bbdadf33fc22ca5ffa23d59d.jpg",
-    date: "28/03/2026",
-    time: "15:05",
-    lastEditedAt: null,
-    removedAt: null,
-    removalReason: null,
-  },
-  {
-    id: 4,
-    title: "Merch draft",
-    caption: "Primeira proposta visual para o merch do próximo lançamento.",
-    image:
-      "https://i.pinimg.com/736x/8d/dc/29/8ddc29e3bbdadf33fc22ca5ffa23d59d.jpg",
-    date: "17/03/2026",
-    time: "12:30",
-    lastEditedAt: null,
-    removedAt: null,
-    removalReason: null,
-  },
-];
+const PROFILE_FIELD_LABELS: Record<string, string> = {
+  birthDate: "Nascimento",
+  location: "Localizacao",
+  interests: "Estilos",
+};
 
-const GALLERY_ITEMS: PreviewItem[] = [
-  {
-    title: "Portrait",
-    subtitle: "Editorial visual",
-    image:
-      "https://i.pinimg.com/736x/8d/dc/29/8ddc29e3bbdadf33fc22ca5ffa23d59d.jpg",
-  },
-  {
-    title: "Moodboard",
-    subtitle: "Era atual",
-    image:
-      "https://i.pinimg.com/736x/6b/87/62/6b8762d66ffc9220294524e16485b4e0.jpg",
-  },
-  {
-    title: "Backstage",
-    subtitle: "Set do vídeo",
-    image:
-      "https://i.pinimg.com/1200x/f4/2f/59/f42f595b9b6b0b9cc8269e4a84364707.jpg",
-  },
-  {
-    title: "Campaign",
-    subtitle: "Coleção em destaque",
-    image:
-      "https://i.pinimg.com/1200x/8f/2a/0b/8f2a0b7b1f8a4d7f1b3c2d9e0f1a2b3c.jpg",
-  },
-];
+function asString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
 
-const FASHION_ITEMS: PreviewItem[] = [
-  {
-    title: "Night jersey",
-    subtitle: "Novo drop",
-    image:
-      "https://kitqueen.co.uk/cdn/shop/files/Navy_96e51aa8-74f2-41ad-af5a-37c60af73c54.png?v=1683196276&width=1500",
-  },
-  {
-    title: "Chrome set",
-    subtitle: "Mais popular",
-    image:
-      "https://kitqueen.co.uk/cdn/shop/files/Navy_96e51aa8-74f2-41ad-af5a-37c60af73c54.png?v=1683196276&width=1500",
-  },
-  {
-    title: "Tour tee",
-    subtitle: "Preview",
-    image:
-      "https://kitqueen.co.uk/cdn/shop/files/Navy_96e51aa8-74f2-41ad-af5a-37c60af73c54.png?v=1683196276&width=1500",
-  },
-  {
-    title: "Runway fit",
-    subtitle: "Seleção",
-    image:
-      "https://kitqueen.co.uk/cdn/shop/files/Navy_96e51aa8-74f2-41ad-af5a-37c60af73c54.png?v=1683196276&width=1500",
-  },
-];
+function asNumber(value: unknown, fallback = 0) {
+  return typeof value === "number" ? value : fallback;
+}
 
-function VideoMediaPreview({ src }: { src: string }) {
-  const player = useVideoPlayer(src, (videoPlayer) => {
+function relativeDate(value: unknown) {
+  let date: Date | null = null;
+
+  if (value instanceof Date) date = value;
+  else if (value && typeof value === "object" && "toDate" in value) {
+    date = (value as { toDate: () => Date }).toDate();
+  } else if (value && typeof value === "object" && "seconds" in value) {
+    date = new Date((value as { seconds: number }).seconds * 1000);
+  }
+
+  if (!date) return "Agora";
+
+  const days = Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000));
+  if (days === 0) return "Hoje";
+  if (days === 1) return "Ontem";
+  if (days < 7) return `${days} dias atras`;
+  if (days < 60) {
+    const weeks = Math.floor(days / 7);
+    return `${weeks} ${weeks === 1 ? "semana" : "semanas"} atras`;
+  }
+  if (days < 365) {
+    const months = Math.floor(days / 30);
+    return `${months} ${months === 1 ? "mes" : "meses"} atras`;
+  }
+  return String(date.getFullYear());
+}
+
+function dateMillis(value: unknown) {
+  if (value instanceof Date) return value.getTime();
+  if (value && typeof value === "object" && "toDate" in value) {
+    return (value as { toDate: () => Date }).toDate().getTime();
+  }
+  if (value && typeof value === "object" && "seconds" in value) {
+    return (value as { seconds: number }).seconds * 1000;
+  }
+  return 0;
+}
+
+function countdownLabel(value: unknown, now: number) {
+  const total = Math.max(0, Math.floor((dateMillis(value) - now) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function countdownParts(value: unknown, now: number) {
+  return countdownLabel(value, now).split(":");
+}
+
+function openUrl(url?: string) {
+  const cleanUrl = url?.trim();
+
+  if (!cleanUrl) {
+    return;
+  }
+
+  Linking.openURL(cleanUrl).catch((error) =>
+    console.log("OPEN PROFILE URL ERROR:", error),
+  );
+}
+
+function MediaBox({ uri, style }: { uri?: string; style: object }) {
+  if (uri) {
+    return <Image source={{ uri }} style={style} />;
+  }
+
+  return (
+    <View style={[style, styles.mediaFallback]}>
+      <Ionicons name="image-outline" size={24} color="#777" />
+    </View>
+  );
+}
+
+function ProfileVideoPreview({
+  uri,
+  style,
+  contentFit = "contain",
+  scale = 1,
+}: {
+  uri: string;
+  style: object;
+  contentFit?: "cover" | "contain";
+  scale?: number;
+}) {
+  const player = useVideoPlayer(uri, (videoPlayer) => {
     videoPlayer.loop = true;
     videoPlayer.muted = true;
     videoPlayer.play();
@@ -251,108 +214,491 @@ function VideoMediaPreview({ src }: { src: string }) {
   return (
     <VideoView
       player={player}
-      style={styles.boxImage}
+      style={[style, { transform: [{ scale }] }]}
+      contentFit={contentFit}
       nativeControls={false}
-      fullscreenOptions={{ enable: false }}
+      allowsFullscreen={false}
+      pointerEvents="none"
     />
   );
 }
 
-function MediaPreview({ src }: { src: string }) {
-  if (src.endsWith(".mp4")) {
-    return <VideoMediaPreview src={src} />;
+function formatLikesLabel(count: number) {
+  if (count >= 1000000) {
+    const value = count / 1000000;
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}M curtidas`;
   }
 
-  return <Image source={{ uri: src }} style={styles.boxImage} />;
+  if (count >= 1000) {
+    const value = count / 1000;
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}k curtidas`;
+  }
+
+  return `${count} curtidas`;
 }
 
-function canEditAgain(lastEditedAt: string | null) {
-  if (!lastEditedAt) {
-    return true;
-  }
+function PostGridTile({
+  post,
+  onPress,
+}: {
+  post: PostItem;
+  onPress: () => void;
+}) {
+  const [tileSize, setTileSize] = useState({ width: 0, height: 0 });
+  const imageUri = post.thumbnailUrl || post.mediaUrl;
+  const isVideo = post.mediaType === "video";
 
-  const previousEdit = new Date(lastEditedAt);
-  const nextEdit = new Date(previousEdit);
+  return (
+    <TouchableOpacity
+      style={styles.postGridTile}
+      activeOpacity={0.88}
+      onLayout={(event) => setTileSize(event.nativeEvent.layout)}
+      onPress={onPress}
+    >
+      {imageUri && !isVideo ? (
+        <Image source={{ uri: imageUri }} style={styles.postGridImage} />
+      ) : imageUri && isVideo ? (
+        <ProfileVideoPreview
+          uri={imageUri}
+          style={styles.postGridImage}
+          contentFit="cover"
+        />
+      ) : (
+        <View style={styles.postGridVideoFallback}>
+          <Ionicons name="play" size={28} color="#fff" />
+        </View>
+      )}
 
-  nextEdit.setFullYear(nextEdit.getFullYear() + 1);
+      {post.overlayMedia.map((overlay) => {
+        const stageWidth = overlay.stageWidth || 1;
+        const stageHeight = overlay.stageHeight || 1;
+        const scaleX = tileSize.width / stageWidth;
+        const scaleY = tileSize.height / stageHeight;
+        const scaledWidth = overlay.baseWidth * overlay.scale;
+        const scaledHeight = overlay.baseHeight * overlay.scale;
+        const offsetX = (scaledWidth - overlay.baseWidth) / 2;
+        const offsetY = (scaledHeight - overlay.baseHeight) / 2;
 
-  return new Date() >= nextEdit;
+        return (
+          <Image
+            key={overlay.id}
+            source={{ uri: overlay.mediaUrl }}
+            style={[
+              styles.postOverlayImage,
+              {
+                left: (overlay.x - offsetX) * scaleX,
+                top: (overlay.y - offsetY) * scaleY,
+                width: scaledWidth * scaleX,
+                height: scaledHeight * scaleY,
+              },
+            ]}
+            resizeMode="contain"
+          />
+        );
+      })}
+
+      <View style={styles.postLikesBadge}>
+        <Text style={styles.postLikesText}>
+          {formatLikesLabel(post.likesCount)}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
 }
 
-function getNextEditDate(lastEditedAt: string | null) {
-  if (!lastEditedAt) {
-    return null;
-  }
+function FullscreenPost({
+  post,
+  onClose,
+  onDelete,
+  canDelete,
+}: {
+  post: PostItem;
+  onClose: () => void;
+  onDelete: (post: PostItem) => void;
+  canDelete: boolean;
+}) {
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const imageUri = post.thumbnailUrl || post.mediaUrl;
+  const isVideo = post.mediaType === "video";
 
-  const nextEdit = new Date(lastEditedAt);
+  return (
+    <View style={styles.fullPostRoot}>
+      <View
+        style={styles.fullPostStage}
+        onLayout={(event) => setStageSize(event.nativeEvent.layout)}
+      >
+        {imageUri && !isVideo ? (
+          <Image
+            source={{ uri: imageUri }}
+            style={[
+              styles.fullPostMedia,
+              { transform: [{ scale: post.mediaScale || 1 }] },
+            ]}
+          />
+        ) : imageUri && isVideo ? (
+          <ProfileVideoPreview
+            uri={imageUri}
+            style={styles.fullPostMedia}
+            contentFit="contain"
+            scale={post.mediaScale || 1}
+          />
+        ) : (
+          <View style={styles.fullPostVideoFallback}>
+            <Ionicons name="play" size={42} color="#fff" />
+          </View>
+        )}
 
-  nextEdit.setFullYear(nextEdit.getFullYear() + 1);
+        {post.overlayMedia.map((overlay) => {
+          const stageWidth = overlay.stageWidth || 1;
+          const stageHeight = overlay.stageHeight || 1;
+          const scaleX = stageSize.width / stageWidth;
+          const scaleY = stageSize.height / stageHeight;
+          const scaledWidth = overlay.baseWidth * overlay.scale;
+          const scaledHeight = overlay.baseHeight * overlay.scale;
+          const offsetX = (scaledWidth - overlay.baseWidth) / 2;
+          const offsetY = (scaledHeight - overlay.baseHeight) / 2;
 
-  return nextEdit.toLocaleDateString("pt-PT");
+          return (
+            <Image
+              key={overlay.id}
+              source={{ uri: overlay.mediaUrl }}
+              style={[
+                styles.fullPostOverlayImage,
+                {
+                  left: (overlay.x - offsetX) * scaleX,
+                  top: (overlay.y - offsetY) * scaleY,
+                  width: scaledWidth * scaleX,
+                  height: scaledHeight * scaleY,
+                },
+              ]}
+              resizeMode="contain"
+            />
+          );
+        })}
+      </View>
+
+      <TouchableOpacity style={styles.fullPostClose} onPress={onClose}>
+        <Ionicons name="chevron-back" size={28} color="#fff" />
+      </TouchableOpacity>
+
+      {canDelete ? (
+        <TouchableOpacity
+          style={styles.fullPostMenuButton}
+          onPress={() => onDelete(post)}
+        >
+          <Ionicons name="ellipsis-horizontal" size={24} color="#fff" />
+        </TouchableOpacity>
+      ) : null}
+
+      {post.linkedTrackTitle ? (
+        <View style={styles.fullPostMusicInside}>
+          <Text style={styles.fullPostMusicTitle} numberOfLines={1}>
+            {post.linkedTrackTitle}
+          </Text>
+        </View>
+      ) : null}
+
+      <View style={styles.fullPostBottom}>
+        <View style={styles.fullPostProfileRow}>
+          {post.authorAvatarUrl ? (
+            <Image
+              source={{ uri: post.authorAvatarUrl }}
+              style={styles.fullPostAvatar}
+            />
+          ) : (
+            <View style={[styles.fullPostAvatar, styles.mediaFallback]}>
+              <Ionicons name="person-outline" size={20} color="#fff" />
+            </View>
+          )}
+
+          <View style={styles.fullPostTextBlock}>
+            <Text style={styles.fullPostAuthor} numberOfLines={1}>
+              {post.authorName || "Perfil"}
+            </Text>
+            {post.caption ? (
+              <Text style={styles.fullPostCaption} numberOfLines={3}>
+                {post.caption}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+
+        <View style={styles.fullPostSongCoverBox}>
+          {post.linkedTrackCoverUrl ? (
+            <Image
+              source={{ uri: post.linkedTrackCoverUrl }}
+              style={styles.fullPostSongCover}
+            />
+          ) : (
+            <Ionicons name="musical-notes-outline" size={22} color="#fff" />
+          )}
+        </View>
+      </View>
+    </View>
+  );
 }
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { wp, hp, font } = useResponsive();
+  const params = useLocalSearchParams<{ userId?: string }>();
+  const { user } = useCurrentUser();
+  const { playQueue } = usePlayer();
+  const { hp, font, wp } = useResponsive();
   const scrollY = useRef(new Animated.Value(0)).current;
 
+  const viewedUserId = params.userId || user?.uid || null;
+  const isOwnProfile = !params.userId || params.userId === user?.uid;
+
+  const [profileUser, setProfileUser] = useState<ProfileExtras | null>(null);
+  const [tracks, setTracks] = useState<TrackItem[]>([]);
+  const [albums, setAlbums] = useState<AlbumItem[]>([]);
+  const [posts, setPosts] = useState<PostItem[]>([]);
+  const [followersCount, setFollowersCount] = useState(0);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [followLoading, setFollowLoading] = useState(false);
   const [editMenuVisible, setEditMenuVisible] = useState(false);
-  const [activePanel, setActivePanel] = useState<EditPanelType>(null);
-  const [bannerUri, setBannerUri] = useState(DEFAULT_BANNER_URI);
-  const [profileBackgroundUri, setProfileBackgroundUri] = useState<
-    string | null
-  >(null);
-  const [albums, setAlbums] = useState(INITIAL_ALBUMS);
-  const [posts, setPosts] = useState(INITIAL_POSTS);
-  const [selectedAlbumId, setSelectedAlbumId] = useState<number | null>(
-    INITIAL_ALBUMS[0]?.id ?? null,
-  );
-  const [selectedPostId, setSelectedPostId] = useState<number | null>(
-    INITIAL_POSTS[0]?.id ?? null,
-  );
-  const [albumDraftName, setAlbumDraftName] = useState(INITIAL_ALBUMS[0].name);
-  const [albumDraftCover, setAlbumDraftCover] = useState(INITIAL_ALBUMS[0].cover);
-  const [albumDraftBackground, setAlbumDraftBackground] = useState<
-    string | null
-  >(INITIAL_ALBUMS[0].background);
-  const [albumRemovalReason, setAlbumRemovalReason] = useState("");
-  const [postDraftTitle, setPostDraftTitle] = useState(INITIAL_POSTS[0].title);
-  const [postDraftCaption, setPostDraftCaption] = useState(
-    INITIAL_POSTS[0].caption,
-  );
-  const [postDraftImage, setPostDraftImage] = useState(INITIAL_POSTS[0].image);
-  const [postRemovalReason, setPostRemovalReason] = useState("");
-  const [previewItem, setPreviewItem] = useState<PreviewItem | null>(null);
-
-  const activeAlbums = useMemo(
-    () => albums.filter((album) => !album.removedAt),
-    [albums],
-  );
-  const removedAlbums = useMemo(
-    () => albums.filter((album) => album.removedAt),
-    [albums],
-  );
-  const activePosts = useMemo(
-    () => posts.filter((post) => !post.removedAt),
-    [posts],
-  );
-  const removedPosts = useMemo(
-    () => posts.filter((post) => post.removedAt),
-    [posts],
+  const [avatarEditorVisible, setAvatarEditorVisible] = useState(false);
+  const [merchEditorVisible, setMerchEditorVisible] = useState(false);
+  const [connectEditorVisible, setConnectEditorVisible] = useState(false);
+  const [activePostIndex, setActivePostIndex] = useState<number | null>(null);
+  const [merchMode, setMerchMode] = useState<
+    "home" | "logo" | "product" | "gallery"
+  >("home");
+  const [selectedProduct, setSelectedProduct] = useState<MerchProduct | null>(
+    null,
   );
 
-  const selectedAlbum =
-    albums.find((album) => album.id === selectedAlbumId) ?? null;
-  const selectedPost = posts.find((post) => post.id === selectedPostId) ?? null;
-  const selectedAlbumLocked =
-    selectedAlbum !== null && !canEditAgain(selectedAlbum.lastEditedAt);
+  const [spotifyUrl, setSpotifyUrl] = useState("");
+  const [merchLogoUrl, setMerchLogoUrl] = useState("");
+  const [merchName, setMerchName] = useState("");
+  const [shopUrl, setShopUrl] = useState("");
+  const [merchProducts, setMerchProducts] = useState<MerchProduct[]>([]);
+  const [merchGallery, setMerchGallery] = useState<MerchGalleryItem[]>([]);
+  const [productTitle, setProductTitle] = useState("");
+  const [productLink, setProductLink] = useState("");
+  const [productPrice, setProductPrice] = useState("");
+  const [productCurrency, setProductCurrency] = useState("EUR");
+  const [productImageUrl, setProductImageUrl] = useState("");
+  const [countdownNow, setCountdownNow] = useState(Date.now());
+  const [profileRefreshKey, setProfileRefreshKey] = useState(0);
 
-  const lastDrop = activeAlbums[0] ?? INITIAL_ALBUMS[0];
-  const timelineItems = activeAlbums.slice(0, 4);
-  const topItems = activeAlbums.slice(0, 5);
-  const albumItems = activeAlbums.filter((album) => album.type === "Album");
-  const singleItems = activeAlbums.filter((album) => album.type === "Single");
+  useEffect(() => {
+    const timer = setInterval(() => setCountdownNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
+  useEffect(() => {
+    let active = true;
+
+    async function loadProfile() {
+      const content = await getProfileContent(viewedUserId);
+
+      if (!active) {
+        return;
+      }
+
+      const loadedUser = content.user as ProfileExtras;
+      setProfileUser(loadedUser);
+      setFollowersCount(asNumber(loadedUser.followersCount));
+      setSpotifyUrl(asString(loadedUser.spotifyUrl));
+      setMerchLogoUrl(asString(loadedUser.merchLogoUrl));
+      setMerchName(asString(loadedUser.merchName, "Merchandise"));
+      setShopUrl(asString(loadedUser.shopUrl));
+      setMerchProducts(
+        Array.isArray(loadedUser.merchProducts) ? loadedUser.merchProducts : [],
+      );
+      setMerchGallery(
+        Array.isArray(loadedUser.merchGallery) ? loadedUser.merchGallery : [],
+      );
+
+      setTracks(
+        content.tracks
+          .map((track, index) => ({
+            id: asString("id" in track ? track.id : "", `track-${index}`),
+            albumId: asString("albumId" in track ? track.albumId : ""),
+            title: asString("title" in track ? track.title : "", "Musica"),
+            coverUrl: asString("coverUrl" in track ? track.coverUrl : ""),
+            shortVideoUrl: asString(
+              "shortVideoUrl" in track ? track.shortVideoUrl : "",
+            ),
+            genre: asString("genre" in track ? track.genre : ""),
+            lyrics: asString("lyrics" in track ? track.lyrics : ""),
+            audioUrl: asString("audioUrl" in track ? track.audioUrl : ""),
+            likesCount: asNumber("likesCount" in track ? track.likesCount : 0),
+            playsCount: asNumber("playsCount" in track ? track.playsCount : 0),
+            releaseDate:
+              ("releaseDate" in track ? track.releaseDate : undefined) ??
+              ("createdAt" in track ? track.createdAt : undefined),
+          }))
+          .filter((track) => track.audioUrl),
+      );
+
+      setAlbums(
+        content.albums.map((album, index) => ({
+          id: asString("id" in album ? album.id : "", `album-${index}`),
+          title: asString("title" in album ? album.title : "", "Album"),
+          coverUrl: asString("coverUrl" in album ? album.coverUrl : ""),
+          releaseDate:
+            ("releaseDate" in album ? album.releaseDate : undefined) ??
+            ("createdAt" in album ? album.createdAt : undefined),
+          preReleaseEnabled:
+            "preReleaseEnabled" in album && album.preReleaseEnabled === true,
+          preReleaseHighlightUntil:
+            "preReleaseHighlightUntil" in album
+              ? album.preReleaseHighlightUntil
+              : undefined,
+          status: asString("status" in album ? album.status : "", "published"),
+          type:
+            asString("type" in album ? album.type : "album") === "ep"
+              ? "ep"
+              : asString("type" in album ? album.type : "album") === "single"
+                ? "single"
+                : "album",
+          trackIds: Array.isArray("trackIds" in album ? album.trackIds : [])
+            ? (("trackIds" in album ? album.trackIds : []) as string[])
+            : [],
+        })),
+      );
+      const tracksById = new Map(
+        content.tracks.map((track) => [
+          asString("id" in track ? track.id : ""),
+          track,
+        ]),
+      );
+
+      setPosts(
+        content.posts.map((post, index) => {
+          const linkedTrackId = asString(
+            "linkedTrackId" in post ? post.linkedTrackId : "",
+          );
+          const linkedTrack = tracksById.get(linkedTrackId);
+
+          return {
+            id: asString("id" in post ? post.id : "", `post-${index}`),
+            ownerId: asString("userId" in post ? post.userId : ""),
+            caption: asString("caption" in post ? post.caption : ""),
+            mediaType:
+              asString("mediaType" in post ? post.mediaType : "image") ===
+              "video"
+                ? "video"
+                : "image",
+            mediaUrl: asString("mediaUrl" in post ? post.mediaUrl : ""),
+            thumbnailUrl: asString(
+              "thumbnailUrl" in post ? post.thumbnailUrl : "",
+            ),
+            mediaScale: asNumber("mediaScale" in post ? post.mediaScale : 1, 1),
+            likesCount: asNumber("likesCount" in post ? post.likesCount : 0),
+            linkedTrackId,
+            linkedTrackTitle: asString(
+              linkedTrack && "title" in linkedTrack ? linkedTrack.title : "",
+            ),
+            linkedTrackCoverUrl: asString(
+              linkedTrack && "coverUrl" in linkedTrack
+                ? linkedTrack.coverUrl
+                : "",
+            ),
+            authorName:
+              loadedUser.displayName || loadedUser.username || "Perfil",
+            authorAvatarUrl: asString(loadedUser.avatarUrl),
+            overlayMedia: Array.isArray(
+              "overlayMedia" in post ? post.overlayMedia : [],
+            )
+              ? (("overlayMedia" in post
+                  ? post.overlayMedia
+                  : []) as NonNullable<PostDocument["overlayMedia"]>)
+              : [],
+          };
+        }),
+      );
+    }
+
+    loadProfile().catch((error) => console.log("LOAD PROFILE ERROR:", error));
+
+    return () => {
+      active = false;
+    };
+  }, [profileRefreshKey, viewedUserId]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadFollowState() {
+      if (!user?.uid || !viewedUserId || isOwnProfile) {
+        setIsFollowing(false);
+        return;
+      }
+
+      const [nextIsFollowing, nextFollowersCount] = await Promise.all([
+        isFollowingUser(user.uid, viewedUserId),
+        countUserFollowers(viewedUserId),
+      ]);
+
+      if (active) {
+        setIsFollowing(nextIsFollowing);
+        setFollowersCount(nextFollowersCount);
+      }
+    }
+
+    loadFollowState().catch((error) =>
+      console.log("LOAD FOLLOW ERROR:", error),
+    );
+
+    return () => {
+      active = false;
+    };
+  }, [isOwnProfile, user?.uid, viewedUserId]);
+
+  const displayName =
+    profileUser?.displayName ||
+    profileUser?.username ||
+    user?.displayName ||
+    "Perfil";
+  const avatarUrl = profileUser?.avatarUrl || "";
+  const heroImageUrl = avatarUrl || profileUser?.bannerUrl || "";
+  const profileLocation = [profileUser?.city, profileUser?.country]
+    .map((item) => asString(item).trim())
+    .filter(Boolean)
+    .join(", ");
+  const profileBirthDate = asString(profileUser?.birthDate).trim();
+  const profileInterests = Array.isArray(profileUser?.interests)
+    ? profileUser.interests.filter(Boolean).join(", ")
+    : "";
+  const profileHiddenFields = Array.isArray(profileUser?.profileHiddenFields)
+    ? profileUser.profileHiddenFields
+    : [];
+  const showProfileLocation =
+    profileLocation && !profileHiddenFields.includes("location");
+  const showProfileBirthDate =
+    profileBirthDate && !profileHiddenFields.includes("birthDate");
+  const showProfileInterests =
+    profileInterests && !profileHiddenFields.includes("interests");
+  const publicInfoRows = [
+    showProfileLocation
+      ? {
+          icon: "location-outline" as const,
+          label: "Localizacao",
+          value: profileLocation,
+        }
+      : null,
+    showProfileBirthDate
+      ? {
+          icon: "calendar-outline" as const,
+          label: "Nascimento",
+          value: profileBirthDate,
+        }
+      : null,
+    showProfileInterests
+      ? {
+          icon: "musical-notes-outline" as const,
+          label: "Estilos",
+          value: profileInterests,
+        }
+      : null,
+  ].filter(Boolean) as {
+    icon: React.ComponentProps<typeof Ionicons>["name"];
+    label: string;
+    value: string;
+  }[];
   const BANNER_HEIGHT = hp(43);
   const BANNER_MIN_HEIGHT = hp(15);
   const COLLAPSE_DISTANCE = BANNER_HEIGHT - BANNER_MIN_HEIGHT;
@@ -367,846 +713,476 @@ export default function ProfileScreen() {
     ],
     extrapolate: "clamp",
   });
-
   const imageScale = scrollY.interpolate({
     inputRange: [-MAX_STRETCH, 0, COLLAPSE_DISTANCE],
     outputRange: [1.35, 1.12, 1.22],
     extrapolate: "clamp",
   });
-
   const imageTranslateY = scrollY.interpolate({
     inputRange: [-MAX_STRETCH, 0, COLLAPSE_DISTANCE],
     outputRange: [-22, -12, -8],
     extrapolate: "clamp",
   });
-
   const bannerContentOpacity = scrollY.interpolate({
     inputRange: [0, COLLAPSE_DISTANCE * 0.6, COLLAPSE_DISTANCE],
     outputRange: [1, 0.35, 0],
     extrapolate: "clamp",
   });
-
   const compactContentOpacity = scrollY.interpolate({
     inputRange: [COLLAPSE_DISTANCE * 0.55, COLLAPSE_DISTANCE],
     outputRange: [0, 1],
     extrapolate: "clamp",
   });
-
   const compactContentTranslateY = scrollY.interpolate({
     inputRange: [COLLAPSE_DISTANCE * 0.55, COLLAPSE_DISTANCE],
     outputRange: [8, 0],
     extrapolate: "clamp",
   });
 
-  function resetAlbumDraft(album: AlbumItem) {
-    setSelectedAlbumId(album.id);
-    setAlbumDraftName(album.name);
-    setAlbumDraftCover(album.cover);
-    setAlbumDraftBackground(album.background);
-    setAlbumRemovalReason("");
-  }
+  const mostLikedTrack = useMemo(
+    () => {
+      const track = [...tracks].sort(
+        (left, right) => right.likesCount - left.likesCount,
+      )[0];
+      return track && track.likesCount > 0 ? track : null;
+    },
+    [tracks],
+  );
+  const profilePreRelease = albums.find(
+    (album) =>
+      (album.preReleaseEnabled && album.status === "scheduled") ||
+      (album.status === "published" &&
+        dateMillis(album.preReleaseHighlightUntil) > countdownNow),
+  );
+  const profilePreReleaseCountdownTarget =
+    profilePreRelease?.status === "published"
+      ? profilePreRelease.preReleaseHighlightUntil
+      : profilePreRelease?.releaseDate;
+  const profilePreReleaseCountdownAt = dateMillis(profilePreReleaseCountdownTarget);
+  const profilePreReleaseId = profilePreRelease?.id;
+  const publishedAlbums = albums.filter((album) => album.status === "published");
+  const albumReleases = publishedAlbums.filter((album) => album.type === "album");
+  const singleAndEpReleases = publishedAlbums.filter((album) => album.type !== "album");
 
-  function resetPostDraft(post: PostItem) {
-    setSelectedPostId(post.id);
-    setPostDraftTitle(post.title);
-    setPostDraftCaption(post.caption);
-    setPostDraftImage(post.image);
-    setPostRemovalReason("");
-  }
-
-  function closeEditMenu() {
-    setEditMenuVisible(false);
-  }
-
-  function closePanel() {
-    setActivePanel(null);
-  }
-
-  async function handlePickBanner() {
-    closeEditMenu();
-
-    const uri = await pickLibraryImage();
-
-    if (!uri) {
+  useEffect(() => {
+    if (!profilePreReleaseId || profilePreReleaseCountdownAt > Date.now()) {
       return;
     }
 
-    setBannerUri(uri);
-    Alert.alert("Banner atualizado", "A foto do banner foi trocada.");
-  }
+    const timer = setInterval(() => setProfileRefreshKey((current) => current + 1), 10000);
+    return () => clearInterval(timer);
+  }, [profilePreReleaseCountdownAt, profilePreReleaseId]);
 
-  async function handlePickProfileBackground() {
-    closeEditMenu();
-
-    const uri = await pickLibraryImage();
-
-    if (!uri) {
+  async function handleFollowPress() {
+    if (!user?.uid || !viewedUserId || isOwnProfile || followLoading) {
       return;
     }
 
-    setProfileBackgroundUri(uri);
-    Alert.alert("Fundo atualizado", "A foto de fundo do perfil foi aplicada.");
-  }
+    try {
+      setFollowLoading(true);
 
-  function handleRemoveProfileBackground() {
-    closeEditMenu();
-    setProfileBackgroundUri(null);
-    Alert.alert("Fundo removido", "O perfil voltou ao fundo escuro.");
-  }
-
-  function openAlbumPanel() {
-    closeEditMenu();
-
-    if (activeAlbums[0]) {
-      resetAlbumDraft(activeAlbums[0]);
-    }
-
-    setActivePanel("albums");
-  }
-
-  function openPostPanel() {
-    closeEditMenu();
-
-    if (activePosts[0]) {
-      resetPostDraft(activePosts[0]);
-    }
-
-    setActivePanel("posts");
-  }
-
-  async function handlePickAlbumCover() {
-    if (selectedAlbumLocked) {
+      if (isFollowing) {
+        await removeFollow(user.uid, viewedUserId);
+        setIsFollowing(false);
+        setFollowersCount((current) => Math.max(0, current - 1));
+      } else {
+        await createFollow(user.uid, viewedUserId);
+        setIsFollowing(true);
+        setFollowersCount((current) => current + 1);
+      }
+    } catch (error) {
+      console.log("FOLLOW PROFILE ERROR:", error);
       Alert.alert(
-        "Edição bloqueada",
-        `Este álbum só pode ser alterado outra vez em ${getNextEditDate(
-          selectedAlbum?.lastEditedAt ?? null,
-        )}.`,
+        "Nao foi possivel",
+        "Tenta novamente dentro de alguns segundos.",
       );
-      return;
-    }
-
-    const uri = await pickLibraryImage();
-
-    if (uri) {
-      setAlbumDraftCover(uri);
+    } finally {
+      setFollowLoading(false);
     }
   }
 
-  async function handlePickAlbumBackground() {
-    if (selectedAlbumLocked) {
-      Alert.alert(
-        "Edição bloqueada",
-        `Este álbum só pode ser alterado outra vez em ${getNextEditDate(
-          selectedAlbum?.lastEditedAt ?? null,
-        )}.`,
-      );
+  function getPostMediaUrls(post: PostItem) {
+    return [
+      post.mediaUrl,
+      post.thumbnailUrl,
+      ...post.overlayMedia.map((overlay) => overlay.mediaUrl),
+    ];
+  }
+
+  function handleDeletePost(post: PostItem) {
+    if (!user?.uid || post.ownerId !== user.uid) {
       return;
     }
 
-    const uri = await pickLibraryImage();
+    Alert.alert("Apagar post?", "Isto remove o post e a midia guardada nele.", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Apagar",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await deletePost({
+              postId: post.id,
+              mediaUrls: getPostMediaUrls(post),
+            });
+            setPosts((current) =>
+              current.filter((item) => item.id !== post.id),
+            );
+            setActivePostIndex(null);
+          } catch (error) {
+            console.log("DELETE PROFILE POST ERROR:", error);
+            Alert.alert("Erro", "Nao foi possivel apagar o post agora.");
+          }
+        },
+      },
+    ]);
+  }
 
-    if (uri) {
-      setAlbumDraftBackground(uri);
+  async function pickAndUpload(
+    target: "avatar" | "logo" | "product" | "gallery",
+  ) {
+    if (!user?.uid) {
+      return null;
+    }
+
+    const asset = await pickLibraryAsset({
+      allowsEditing: target === "avatar",
+      aspect: target === "avatar" ? [1, 1] : undefined,
+      mediaTypes: target === "gallery" ? ["images", "videos"] : "images",
+      quality: 0.9,
+    });
+
+    if (!asset) {
+      return null;
+    }
+
+    const uploadTarget =
+      target === "avatar"
+        ? { kind: "avatar" as const, userId: user.uid }
+        : {
+            kind: "temp" as const,
+            userId: user.uid,
+            uploadId: `${target}-${Date.now()}.${asset.type === "video" ? "mp4" : "jpg"}`,
+          };
+
+    const upload = await uploadUriToStorage(uploadTarget, asset.uri);
+
+    return {
+      url: withCacheBust(upload.downloadUrl),
+      type: asset.type === "video" ? ("video" as const) : ("image" as const),
+    };
+  }
+
+  async function handlePickAvatar() {
+    try {
+      const result = await pickAndUpload("avatar");
+
+      if (!result || !user?.uid) {
+        return;
+      }
+
+      await updateUserProfile(user.uid, {
+        avatarUrl: result.url,
+        bannerUrl: result.url,
+      });
+      setProfileUser((current) =>
+        current
+          ? { ...current, avatarUrl: result.url, bannerUrl: result.url }
+          : current,
+      );
+      setAvatarEditorVisible(false);
+    } catch (error) {
+      console.log("PICK AVATAR ERROR:", error);
+      Alert.alert(
+        "Galeria indisponivel",
+        "Nao foi possivel abrir a galeria. Confirma a permissao das Fotos para o Sonnor.",
+      );
     }
   }
 
-  function handleRemoveAlbumBackground() {
-    if (selectedAlbumLocked) {
-      Alert.alert(
-        "Edição bloqueada",
-        `Este álbum só pode ser alterado outra vez em ${getNextEditDate(
-          selectedAlbum?.lastEditedAt ?? null,
-        )}.`,
-      );
+  async function handlePickLogo() {
+    const result = await pickAndUpload("logo");
+
+    if (!result || !user?.uid) {
       return;
     }
 
-    setAlbumDraftBackground(null);
+    setMerchLogoUrl(result.url);
+    await updateUserProfile(user.uid, { merchLogoUrl: result.url });
   }
 
-  function handleSaveAlbum() {
-    if (!selectedAlbum) {
+  async function handlePickProductImage() {
+    const result = await pickAndUpload("product");
+
+    if (result) {
+      setProductImageUrl(result.url);
+    }
+  }
+
+  async function handleAddGalleryItem() {
+    const result = await pickAndUpload("gallery");
+
+    if (!result || !user?.uid) {
       return;
     }
 
-    if (selectedAlbumLocked) {
-      Alert.alert(
-        "Edição bloqueada",
-        `Este álbum só pode ser alterado outra vez em ${getNextEditDate(
-          selectedAlbum.lastEditedAt,
-        )}.`,
-      );
+    const nextGallery = [
+      {
+        id: `gallery-${Date.now()}`,
+        mediaUrl: result.url,
+        mediaType: result.type,
+      },
+      ...merchGallery,
+    ];
+
+    setMerchGallery(nextGallery);
+    await updateUserProfile(user.uid, { merchGallery: nextGallery });
+    setMerchEditorVisible(false);
+    setMerchMode("home");
+  }
+
+  function handleDeleteGalleryItem(itemId: string) {
+    if (!user?.uid) {
       return;
     }
-
-    const cleanName = albumDraftName.trim();
-
-    if (!cleanName) {
-      Alert.alert("Nome em falta", "Define um nome antes de guardar.");
-      return;
-    }
-
-    const changed =
-      cleanName !== selectedAlbum.name ||
-      albumDraftCover !== selectedAlbum.cover ||
-      albumDraftBackground !== selectedAlbum.background;
-
-    if (!changed) {
-      Alert.alert("Sem alterações", "Não houve mudanças para guardar.");
-      return;
-    }
-
-    setAlbums((current) =>
-      current.map((album) =>
-        album.id === selectedAlbum.id
-          ? {
-              ...album,
-              name: cleanName,
-              cover: albumDraftCover,
-              background: albumDraftBackground,
-              lastEditedAt: new Date().toISOString(),
-            }
-          : album,
-      ),
-    );
 
     Alert.alert(
-      "Álbum atualizado",
-      "As alterações foram guardadas. A próxima edição ficará disponível daqui a 1 ano.",
+      "Remover da galeria",
+      "Queres remover esta foto ou video do merchandise?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Remover",
+          style: "destructive",
+          onPress: async () => {
+            const nextGallery = merchGallery.filter(
+              (item) => item.id !== itemId,
+            );
+
+            setMerchGallery(nextGallery);
+            await updateUserProfile(user.uid, { merchGallery: nextGallery });
+            setMerchEditorVisible(false);
+            setMerchMode("home");
+          },
+        },
+      ],
     );
   }
 
-  function handleRemoveAlbum() {
-    if (!selectedAlbum) {
+  async function handleSaveSpotify() {
+    if (!user?.uid) {
       return;
     }
 
-    const cleanReason = albumRemovalReason.trim();
-
-    if (!cleanReason) {
-      Alert.alert(
-        "Motivo obrigatório",
-        "Explica porque estás a remover este álbum antes de continuar.",
-      );
-      return;
-    }
-
-    setAlbums((current) =>
-      current.map((album) =>
-        album.id === selectedAlbum.id
-          ? {
-              ...album,
-              removedAt: new Date().toISOString(),
-              removalReason: cleanReason,
-            }
-          : album,
-      ),
-    );
-
-    const nextAlbum =
-      activeAlbums.find((album) => album.id !== selectedAlbum.id) ?? null;
-
-    if (nextAlbum) {
-      resetAlbumDraft(nextAlbum);
-    } else {
-      setSelectedAlbumId(null);
-      setAlbumDraftName("");
-      setAlbumDraftCover("");
-      setAlbumDraftBackground(null);
-      setAlbumRemovalReason("");
-    }
-
-    Alert.alert("Álbum removido", `"${selectedAlbum.name}" foi removido.`);
+    await updateUserProfile(user.uid, {
+      spotifyUrl: spotifyUrl.trim(),
+    });
+    setConnectEditorVisible(false);
+    Alert.alert("Guardado", "Spotify conectado ao perfil.");
   }
 
-  async function handlePickPostImage() {
-    const uri = await pickLibraryImage();
-
-    if (uri) {
-      setPostDraftImage(uri);
+  async function handleSaveMerchBrand() {
+    if (!user?.uid) {
+      return;
     }
+
+    await updateUserProfile(user.uid, {
+      merchLogoUrl,
+      merchName: merchName.trim() || "Merchandise",
+      shopUrl: shopUrl.trim(),
+    });
+    setMerchEditorVisible(false);
+    setMerchMode("home");
+    Alert.alert("Guardado", "Merchandise atualizado no perfil.");
   }
 
-  function handleSavePost() {
-    if (!selectedPost) {
+  async function handleSaveProduct() {
+    if (!user?.uid || !productTitle.trim() || !productImageUrl) {
+      Alert.alert("Produto incompleto", "Escreve o nome e escolhe uma imagem para a peca.");
       return;
     }
 
-    const cleanTitle = postDraftTitle.trim();
-    const cleanCaption = postDraftCaption.trim();
-
-    if (!cleanTitle || !cleanCaption) {
-      Alert.alert(
-        "Campos em falta",
-        "O post precisa de título e legenda antes de guardar.",
-      );
-      return;
-    }
-
-    setPosts((current) =>
-      current.map((post) =>
-        post.id === selectedPost.id
-          ? {
-              ...post,
-              title: cleanTitle,
-              caption: cleanCaption,
-              image: postDraftImage,
-              lastEditedAt: new Date().toISOString(),
-            }
-          : post,
-      ),
-    );
-
-    Alert.alert("Post atualizado", "As alterações do post foram guardadas.");
-  }
-
-  function handleRemovePost() {
-    if (!selectedPost) {
-      return;
-    }
-
-    const cleanReason = postRemovalReason.trim();
-
-    if (!cleanReason) {
-      Alert.alert(
-        "Motivo obrigatório",
-        "Explica porque estás a remover este post.",
-      );
-      return;
-    }
-
-    setPosts((current) =>
-      current.map((post) =>
-        post.id === selectedPost.id
-          ? {
-              ...post,
-              removedAt: new Date().toISOString(),
-              removalReason: cleanReason,
-            }
-          : post,
-      ),
-    );
-
-    const nextPost = activePosts.find((post) => post.id !== selectedPost.id) ?? null;
-
-    if (nextPost) {
-      resetPostDraft(nextPost);
-    } else {
-      setSelectedPostId(null);
-      setPostDraftTitle("");
-      setPostDraftCaption("");
-      setPostDraftImage("");
-      setPostRemovalReason("");
-    }
-
-    Alert.alert("Post removido", `"${selectedPost.title}" foi removido.`);
-  }
-
-  function openPreview(item: PreviewItem) {
-    const match = findMusicMatch(item.title);
-
-    if (match) {
-      router.push(
-        buildReleaseRoute(match, {
-          heroImage: item.image,
-        }),
-      );
-      return;
-    }
-
-    setPreviewItem(item);
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  function openReleaseFromAlbum(item: AlbumItem) {
-    const fallback: PreviewItem = {
-      title: item.name,
-      subtitle: `${item.type} • ${item.year}`,
-      image: item.background ?? item.cover,
-      description: `Lancado em ${item.releaseDate} as ${item.releaseTime}.`,
+    const nextProduct: MerchProduct = {
+      id: selectedProduct?.id ?? `product-${Date.now()}`,
+      title: productTitle.trim(),
+      imageUrl: productImageUrl,
+      linkUrl: productLink.trim(),
+      price: productPrice.trim(),
+      currency: productCurrency,
     };
-    const match = findMusicMatch(item.name);
 
-    if (!match) {
-      openPreview(fallback);
+    const nextProducts = selectedProduct
+      ? merchProducts.map((product) =>
+          product.id === selectedProduct.id ? nextProduct : product,
+        )
+      : [nextProduct, ...merchProducts];
+
+    setMerchProducts(nextProducts);
+    await updateUserProfile(user.uid, { merchProducts: nextProducts });
+    clearProductForm();
+    setMerchEditorVisible(false);
+    setMerchMode("home");
+  }
+
+  function handleDeleteProduct(productId: string) {
+    if (!user?.uid) {
       return;
     }
 
-    router.push(
-      buildReleaseRoute(match, {
-        title: item.name,
-        cover: item.cover,
-        heroImage: item.background ?? item.cover,
-        type: item.type,
-        year: item.year,
-        releaseDate: item.releaseDate,
-      }),
-    );
+    Alert.alert("Apagar peca", "Queres remover esta peca do merchandise?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Apagar",
+        style: "destructive",
+        onPress: async () => {
+          const nextProducts = merchProducts.filter(
+            (product) => product.id !== productId,
+          );
+
+          setMerchProducts(nextProducts);
+          await updateUserProfile(user.uid, { merchProducts: nextProducts });
+          clearProductForm();
+          setMerchMode("home");
+          setMerchEditorVisible(false);
+        },
+      },
+    ]);
   }
 
-  const panelTitle = activePanel === "albums" ? "Editar álbuns" : "Editar posts";
+  function clearProductForm() {
+    setSelectedProduct(null);
+    setProductTitle("");
+    setProductLink("");
+    setProductPrice("");
+    setProductCurrency("EUR");
+    setProductImageUrl("");
+  }
+
+  function editProduct(product: MerchProduct) {
+    setSelectedProduct(product);
+    setProductTitle(product.title);
+    setProductLink(product.linkUrl);
+    setProductPrice(product.price ?? "");
+    setProductCurrency(product.currency ?? "EUR");
+    setProductImageUrl(product.imageUrl);
+    setMerchMode("product");
+    setMerchEditorVisible(true);
+  }
+
+  function openProfileAlbum(album: AlbumItem) {
+    router.push({
+      pathname: "/main/release/[slug]",
+      params: {
+        slug: album.id,
+        albumId: album.id,
+        artist: displayName,
+        cover: album.coverUrl,
+        title: album.title,
+      },
+    });
+  }
+
+  async function playProfileAlbum(album: AlbumItem) {
+    const content = await getAlbumContent(album.id);
+    if (!content) return;
+
+    const queue: Track[] = content.tracks
+      .map((track) => ({
+        id: track.id,
+        uri: track.audioUrl,
+        title: track.title,
+        artist: displayName,
+        cover: track.coverUrl || album.coverUrl,
+        genre: track.genre,
+        shortVideo: track.shortVideoUrl,
+        lyrics: track.lyrics,
+        albumId: album.id,
+        source: "profile" as const,
+      }))
+      .filter((track) => track.uri);
+
+    await playQueue(queue, 0);
+  }
+
+  async function playProfileTrack(track: TrackItem) {
+    if (!track.audioUrl) return;
+
+    await playQueue(
+      [
+        {
+          id: track.id,
+          uri: track.audioUrl,
+          title: track.title,
+          artist: displayName,
+          cover: track.coverUrl,
+          genre: track.genre,
+          shortVideo: track.shortVideoUrl,
+          lyrics: track.lyrics,
+          albumId: track.albumId,
+          source: "profile",
+        },
+      ],
+      0,
+    );
+  }
 
   return (
     <View style={styles.root}>
-      {profileBackgroundUri && (
-        <>
-          <Image
-            source={{ uri: profileBackgroundUri }}
-            style={styles.profileBackgroundImage}
-          />
-          <View style={styles.profileBackgroundOverlay} />
-        </>
-      )}
-
-      <Modal transparent visible={editMenuVisible} animationType="fade">
-        <Pressable style={styles.modalBackdrop} onPress={closeEditMenu}>
-          <Pressable
-            style={styles.editMenuCard}
-            onPress={(event) => event.stopPropagation()}
-          >
-            <TouchableOpacity
-              style={styles.editMenuOption}
-              onPress={handlePickBanner}
-            >
-              <Text style={styles.editMenuText}>Mudar foto do banner</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.editMenuOption}
-              onPress={handlePickProfileBackground}
-            >
-              <Text style={styles.editMenuText}>Escolher foto de fundo</Text>
-            </TouchableOpacity>
-
-            {profileBackgroundUri && (
-              <TouchableOpacity
-                style={styles.editMenuOption}
-                onPress={handleRemoveProfileBackground}
-              >
-                <Text style={styles.editMenuText}>Remover foto de fundo</Text>
-              </TouchableOpacity>
-            )}
-
-            <TouchableOpacity
-              style={styles.editMenuOption}
-              onPress={openAlbumPanel}
-            >
-              <Text style={styles.editMenuText}>Editar álbuns</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.editMenuOption}
-              onPress={openPostPanel}
-            >
-              <Text style={styles.editMenuText}>Editar posts</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <Modal transparent visible={activePanel !== null} animationType="fade">
-        <Pressable style={styles.modalBackdrop} onPress={closePanel}>
-          <Pressable
-            style={styles.managerCard}
-            onPress={(event) => event.stopPropagation()}
-          >
-            <View style={styles.managerHeader}>
-              <Text style={styles.managerTitle}>{panelTitle}</Text>
-
-              <TouchableOpacity onPress={closePanel}>
-                <Ionicons name="close" size={22} color="#fff" />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              style={styles.managerScroll}
-              contentContainerStyle={styles.managerScrollContent}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {activePanel === "albums" && (
-                <>
-                  <Text style={styles.managerSectionTitle}>Lista de álbuns</Text>
-
-                  {activeAlbums.length === 0 ? (
-                    <Text style={styles.emptyListText}>
-                      Não tens álbuns ativos neste momento.
-                    </Text>
-                  ) : (
-                    activeAlbums.map((album) => {
-                      const locked = !canEditAgain(album.lastEditedAt);
-
-                      return (
-                        <TouchableOpacity
-                          key={album.id}
-                          style={[
-                            styles.managerRow,
-                            selectedAlbumId === album.id && styles.managerRowActive,
-                          ]}
-                          onPress={() => resetAlbumDraft(album)}
-                        >
-                          <Image
-                            source={{ uri: album.cover }}
-                            style={styles.managerThumb}
-                          />
-
-                          <View style={styles.managerRowText}>
-                            <Text style={styles.managerRowTitle}>{album.name}</Text>
-                            <Text style={styles.managerRowMeta}>
-                              {album.releaseDate} • {album.releaseTime} • {album.type}
-                            </Text>
-                            {locked && (
-                              <Text style={styles.managerRowHint}>
-                                Próxima edição: {getNextEditDate(album.lastEditedAt)}
-                              </Text>
-                            )}
-                          </View>
-                        </TouchableOpacity>
-                      );
-                    })
-                  )}
-
-                  {selectedAlbum && !selectedAlbum.removedAt && (
-                    <View style={styles.editorCard}>
-                      <Text style={styles.editorTitle}>Álbum selecionado</Text>
-
-                      <View style={styles.editorPreviewRow}>
-                        <Image
-                          source={{ uri: albumDraftCover }}
-                          style={styles.editorCoverPreview}
-                        />
-
-                        <View style={styles.editorBackgroundBlock}>
-                          {albumDraftBackground ? (
-                            <Image
-                              source={{ uri: albumDraftBackground }}
-                              style={styles.editorBackgroundPreview}
-                            />
-                          ) : (
-                            <View style={styles.editorBackgroundPlaceholder}>
-                              <Text style={styles.editorBackgroundPlaceholderText}>
-                                Sem fundo do álbum
-                              </Text>
-                            </View>
-                          )}
-                        </View>
-                      </View>
-
-                      <TextInput
-                        value={albumDraftName}
-                        onChangeText={setAlbumDraftName}
-                        placeholder="Nome do álbum"
-                        placeholderTextColor="#666"
-                        style={[
-                          styles.editorInput,
-                          selectedAlbumLocked && styles.editorInputDisabled,
-                        ]}
-                        editable={!selectedAlbumLocked}
-                      />
-
-                      {selectedAlbumLocked ? (
-                        <Text style={styles.lockedText}>
-                          Este álbum já foi editado este ano. Nova edição disponível em{" "}
-                          {getNextEditDate(selectedAlbum.lastEditedAt)}.
-                        </Text>
-                      ) : (
-                        <>
-                          <View style={styles.editorActionRow}>
-                            <TouchableOpacity
-                              style={styles.secondaryButton}
-                              onPress={handlePickAlbumCover}
-                            >
-                              <Text style={styles.secondaryButtonText}>
-                                Editar capa
-                              </Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity
-                              style={styles.secondaryButton}
-                              onPress={handlePickAlbumBackground}
-                            >
-                              <Text style={styles.secondaryButtonText}>
-                                Editar fundo
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-
-                          <TouchableOpacity
-                            style={styles.subtleButton}
-                            onPress={handleRemoveAlbumBackground}
-                          >
-                            <Text style={styles.subtleButtonText}>
-                              Remover fundo do álbum
-                            </Text>
-                          </TouchableOpacity>
-
-                          <TouchableOpacity
-                            style={styles.primaryButton}
-                            onPress={handleSaveAlbum}
-                          >
-                            <Text style={styles.primaryButtonText}>
-                              Guardar edição anual
-                            </Text>
-                          </TouchableOpacity>
-                        </>
-                      )}
-
-                      <TextInput
-                        value={albumRemovalReason}
-                        onChangeText={setAlbumRemovalReason}
-                        placeholder="Motivo para remover este álbum"
-                        placeholderTextColor="#666"
-                        style={[styles.editorInput, styles.multilineInput]}
-                        multiline
-                      />
-
-                      <TouchableOpacity
-                        style={styles.dangerButton}
-                        onPress={handleRemoveAlbum}
-                      >
-                        <Text style={styles.dangerButtonText}>Remover álbum</Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-
-                  {removedAlbums.length > 0 && (
-                    <>
-                      <Text style={styles.managerSectionTitle}>
-                        Álbuns removidos
-                      </Text>
-
-                      {removedAlbums.map((album) => (
-                        <View key={album.id} style={styles.managerRowRemoved}>
-                          <Image
-                            source={{ uri: album.cover }}
-                            style={styles.managerThumb}
-                          />
-
-                          <View style={styles.managerRowText}>
-                            <Text style={styles.managerRowTitle}>{album.name}</Text>
-                            <Text style={styles.managerRowMeta}>
-                              Removido em{" "}
-                              {album.removedAt
-                                ? new Date(album.removedAt).toLocaleDateString("pt-PT")
-                                : "--"}
-                            </Text>
-                            <Text style={styles.managerRowHint}>
-                              Motivo: {album.removalReason}
-                            </Text>
-                          </View>
-                        </View>
-                      ))}
-                    </>
-                  )}
-                </>
-              )}
-
-              {activePanel === "posts" && (
-                <>
-                  <Text style={styles.managerSectionTitle}>Lista de posts</Text>
-
-                  {activePosts.length === 0 ? (
-                    <Text style={styles.emptyListText}>
-                      Não tens posts ativos neste momento.
-                    </Text>
-                  ) : (
-                    activePosts.map((post) => (
-                      <TouchableOpacity
-                        key={post.id}
-                        style={[
-                          styles.managerRow,
-                          selectedPostId === post.id && styles.managerRowActive,
-                        ]}
-                        onPress={() => resetPostDraft(post)}
-                      >
-                        <Image source={{ uri: post.image }} style={styles.managerThumb} />
-
-                        <View style={styles.managerRowText}>
-                          <Text style={styles.managerRowTitle}>{post.title}</Text>
-                          <Text style={styles.managerRowMeta}>
-                            {post.date} • {post.time}
-                          </Text>
-                          <Text style={styles.managerRowHint} numberOfLines={2}>
-                            {post.caption}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    ))
-                  )}
-
-                  {selectedPost && !selectedPost.removedAt && (
-                    <View style={styles.editorCard}>
-                      <Text style={styles.editorTitle}>Post selecionado</Text>
-
-                      <Image
-                        source={{ uri: postDraftImage }}
-                        style={styles.postEditorPreview}
-                      />
-
-                      <TextInput
-                        value={postDraftTitle}
-                        onChangeText={setPostDraftTitle}
-                        placeholder="Título do post"
-                        placeholderTextColor="#666"
-                        style={styles.editorInput}
-                      />
-
-                      <TextInput
-                        value={postDraftCaption}
-                        onChangeText={setPostDraftCaption}
-                        placeholder="Legenda do post"
-                        placeholderTextColor="#666"
-                        style={[styles.editorInput, styles.multilineInput]}
-                        multiline
-                      />
-
-                      <TouchableOpacity
-                        style={styles.secondaryButton}
-                        onPress={handlePickPostImage}
-                      >
-                        <Text style={styles.secondaryButtonText}>
-                          Trocar imagem do post
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.primaryButton}
-                        onPress={handleSavePost}
-                      >
-                        <Text style={styles.primaryButtonText}>Guardar post</Text>
-                      </TouchableOpacity>
-
-                      <TextInput
-                        value={postRemovalReason}
-                        onChangeText={setPostRemovalReason}
-                        placeholder="Motivo para remover este post"
-                        placeholderTextColor="#666"
-                        style={[styles.editorInput, styles.multilineInput]}
-                        multiline
-                      />
-
-                      <TouchableOpacity
-                        style={styles.dangerButton}
-                        onPress={handleRemovePost}
-                      >
-                        <Text style={styles.dangerButtonText}>Remover post</Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-
-                  {removedPosts.length > 0 && (
-                    <>
-                      <Text style={styles.managerSectionTitle}>Posts removidos</Text>
-
-                      {removedPosts.map((post) => (
-                        <View key={post.id} style={styles.managerRowRemoved}>
-                          <Image source={{ uri: post.image }} style={styles.managerThumb} />
-
-                          <View style={styles.managerRowText}>
-                            <Text style={styles.managerRowTitle}>{post.title}</Text>
-                            <Text style={styles.managerRowMeta}>
-                              Removido em{" "}
-                              {post.removedAt
-                                ? new Date(post.removedAt).toLocaleDateString("pt-PT")
-                                : "--"}
-                            </Text>
-                            <Text style={styles.managerRowHint}>
-                              Motivo: {post.removalReason}
-                            </Text>
-                          </View>
-                        </View>
-                      ))}
-                    </>
-                  )}
-                </>
-              )}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <Modal transparent visible={previewItem !== null} animationType="fade">
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setPreviewItem(null)}
-        >
-          <Pressable
-            style={styles.previewCard}
-            onPress={(event) => event.stopPropagation()}
-          >
-            {previewItem && (
-              <>
-                <Image
-                  source={{ uri: previewItem.image }}
-                  style={styles.previewImage}
-                />
-                <Text style={styles.previewTitle}>{previewItem.title}</Text>
-                <Text style={styles.previewSubtitle}>{previewItem.subtitle}</Text>
-                {!!previewItem.description && (
-                  <Text style={styles.previewDescription}>
-                    {previewItem.description}
-                  </Text>
-                )}
-              </>
-            )}
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <Animated.View
-        style={[
-          styles.bannerFixed,
-          {
-            height: bannerHeight,
-          },
-        ]}
-      >
-        <View style={styles.bannerBackground} />
-        <Animated.Image
-          source={{ uri: bannerUri }}
-          style={[
-            styles.bannerArtist,
-            {
-              transform: [{ translateY: imageTranslateY }, { scale: imageScale }],
-            },
-          ]}
-        />
-        <Image
-          source={require("../../icons/banner.png")}
-          style={[styles.bannerArtist, styles.bannerOverlay]}
-        />
-        <View style={styles.bannerDarkOverlay} />
-
+      <Animated.View style={[styles.bannerFixed, { height: bannerHeight }]}>
         <Animated.View
           style={[
-            styles.bannerContent,
-            { zIndex: 7, opacity: bannerContentOpacity },
+            styles.bannerBackground,
+            {
+              transform: [
+                { scale: imageScale },
+                { translateY: imageTranslateY },
+              ],
+            },
           ]}
         >
+          <MediaBox uri={heroImageUrl} style={styles.bannerArtist} />
+        </Animated.View>
+        <View style={styles.bannerDarkOverlay} />
+        <Animated.View
+          style={[styles.bannerContent, { opacity: bannerContentOpacity }]}
+        >
           <View style={styles.bannerLeft}>
-            <Text style={[styles.artistName, { fontSize: font(32) }]}>
-              Artist name
-            </Text>
-            <View style={styles.artistRow}>
-              <Text style={[styles.artistStudio, { fontSize: font(14) }]}>
-                Studio Name
+            <View style={styles.artistNameRow}>
+              <Text style={[styles.artistName, { fontSize: font(34) }]}>
+                {displayName}
               </Text>
-              <View style={styles.verifyBadge}>
-                <Ionicons name="checkmark" size={12} color="#fff" />
-              </View>
+              {profileUser?.verified ? (
+                <View style={styles.verifiedProfilePill}>
+                  <View style={styles.verifyBadge}>
+                    <Ionicons name="checkmark" size={13} color="#fff" />
+                  </View>
+                  <Text style={styles.verifiedProfileText}>Verificado pela Sonnor</Text>
+                </View>
+              ) : null}
             </View>
           </View>
           <TouchableOpacity
-            style={styles.followButton}
-            onPress={() => setEditMenuVisible(true)}
+            style={[
+              styles.followButton,
+              !isOwnProfile && isFollowing ? styles.followingButton : null,
+            ]}
+            onPress={() =>
+              isOwnProfile ? setEditMenuVisible(true) : handleFollowPress()
+            }
           >
-            <Text style={[styles.followText, { fontSize: font(15) }]}>
-              Editar
+            <Text style={styles.followText}>
+              {isOwnProfile
+                ? "Editar"
+                : followLoading
+                  ? "..."
+                  : isFollowing
+                    ? "Seguindo"
+                    : "Seguir"}
             </Text>
           </TouchableOpacity>
         </Animated.View>
-
         <Animated.View
+          pointerEvents="none"
           style={[
             styles.compactContent,
             {
@@ -1215,700 +1191,815 @@ export default function ProfileScreen() {
             },
           ]}
         >
-          <View style={styles.bannerLeft}>
-            <Text style={[styles.artistName, { fontSize: font(26) }]}>
-              Artist name
+          <View style={styles.compactNameRow}>
+            <Text
+              style={[styles.artistName, { fontSize: font(18) }]}
+              numberOfLines={1}
+            >
+              {displayName}
             </Text>
-            <View style={styles.artistRow}>
-              <Text style={[styles.artistStudio, { fontSize: font(12) }]}>
-                Studio name
-              </Text>
-              <View style={styles.verifyBadge}>
-                <Ionicons name="checkmark" size={12} color="#fff" />
+            {profileUser?.verified ? (
+              <View style={styles.smallVerifiedProfilePill}>
+                <View style={styles.smallVerifyBadge}>
+                  <Ionicons name="checkmark" size={9} color="#fff" />
+                </View>
               </View>
-            </View>
+            ) : null}
           </View>
-          <TouchableOpacity
-            style={styles.followButton}
-            onPress={() => setEditMenuVisible(true)}
-          >
-            <Text style={[styles.followText, { fontSize: font(13) }]}>
-              Editar
-            </Text>
-          </TouchableOpacity>
+          <Text style={styles.artistStudio} numberOfLines={1}>
+            {followersCount} followers
+          </Text>
         </Animated.View>
-        <View style={styles.bannerBottomFade} />
       </Animated.View>
 
       <Animated.ScrollView
-        style={styles.container}
-        contentContainerStyle={{ paddingBottom: 200 }}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: BANNER_HEIGHT + 20 },
+        ]}
         scrollEventThrottle={16}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
           { useNativeDriver: false },
         )}
       >
-        <Animated.View style={{ height: bannerHeight }} />
-
-        <View style={styles.content}>
-          <View style={[styles.statsRow, { paddingHorizontal: wp(5) }]}>
-            <View style={styles.statBlock}>
-              <Text style={[styles.statTitle, { fontSize: font(14) }]}>
-                Followers
-              </Text>
-              <Text style={[styles.statNumber, { fontSize: font(16) }]}>0</Text>
-            </View>
-            <View style={styles.statBlock}>
-              <Text style={[styles.statTitle, { fontSize: font(14) }]}>
-                Álbuns
-              </Text>
-              <Text style={[styles.statNumber, { fontSize: font(16) }]}>
-                {activeAlbums.length}
-              </Text>
-            </View>
-            <View style={styles.statBlock}>
-              <Text style={[styles.statTitle, { fontSize: font(14) }]}>
-                Posts
-              </Text>
-              <Text style={[styles.statNumber, { fontSize: font(16) }]}>
-                {activePosts.length}
-              </Text>
-            </View>
+        <View style={styles.statsRow}>
+          <View style={styles.statBlock}>
+            <Text style={styles.statLabel}>Followers</Text>
+            <Text style={styles.statValue}>{followersCount}</Text>
           </View>
-
-          <View style={[styles.sectionHeader, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.sectionTitle, { fontSize: font(20) }]}>
-              Last drop
-            </Text>
+          <View style={styles.statBlock}>
+            <Text style={styles.statLabel}>Lancamentos</Text>
+            <Text style={styles.statValue}>{albums.length}</Text>
           </View>
-          <TouchableOpacity
-            style={[styles.lastDropRow, { paddingHorizontal: wp(5) }]}
-            onPress={() =>
-              openPreview({
-                title: lastDrop.name,
-                subtitle: `${lastDrop.type} • ${lastDrop.year}`,
-                image: lastDrop.cover,
-                description: `Lançado em ${lastDrop.releaseDate} às ${lastDrop.releaseTime}.`,
-              })
-            }
-          >
-            <View style={[styles.lastDropCover, { width: wp(23), height: wp(23) }]}>
-              <Image source={{ uri: lastDrop.cover }} style={styles.boxImage} />
-            </View>
-            <View style={styles.lastDropInfo}>
-              <Text style={[styles.lastDropTitle, { fontSize: font(22) }]}>
-                {lastDrop.name}
-              </Text>
-              <Text style={[styles.lastDropSubtitle, { fontSize: font(14) }]}>
-                {lastDrop.type} • {lastDrop.year}
-              </Text>
-            </View>
-          </TouchableOpacity>
-
-          <View style={[styles.sectionHeader, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.sectionTitle, { fontSize: font(20) }]}>
-              Top 5
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.top5Scroll, { paddingHorizontal: wp(5) }]}
-          >
-            {topItems.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                style={[styles.topCard, { width: wp(30) }]}
-                onPress={() =>
-                  openPreview({
-                    title: item.name,
-                    subtitle: `${item.type} • ${item.year}`,
-                    image: item.cover,
-                    description: `Saída em ${item.releaseDate} às ${item.releaseTime}.`,
-                  })
-                }
-              >
-                <View style={[styles.topCardCover, { height: wp(30) }]}>
-                  <MediaPreview src={item.cover} />
-                </View>
-                <Text style={[styles.topCardTitle, { fontSize: font(14) }]}>
-                  {item.name}
-                </Text>
-                <Text style={[styles.topCardSubtitle, { fontSize: font(12) }]}>
-                  {item.type} • {item.year}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          <View style={[styles.sectionHeader, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.sectionTitle, { fontSize: font(20) }]}>
-              Cronograma
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.timelineScroll, { paddingHorizontal: wp(5) }]}
-          >
-            {timelineItems.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                style={[styles.timelineBlock, { width: wp(45) }]}
-                onPress={() =>
-                  openPreview({
-                    title: item.name,
-                    subtitle: `${item.releaseDate} • ${item.releaseTime}`,
-                    image: item.background ?? item.cover,
-                    description: `Projeto ${item.type.toLowerCase()} do ano ${item.year}.`,
-                  })
-                }
-              >
-                <View style={[styles.timelineCover, { height: wp(45) }]}>
-                  <MediaPreview src={item.background ?? item.cover} />
-                </View>
-                <Text style={[styles.timelineTitle, { fontSize: font(14) }]}>
-                  {item.name}
-                </Text>
-                <Text style={[styles.timelineSubtitle, { fontSize: font(12) }]}>
-                  {item.year}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          <View style={[styles.sectionHeader, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.sectionTitle, { fontSize: font(20) }]}>
-              Álbuns
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.albumScroll, { paddingHorizontal: wp(5) }]}
-          >
-            {albumItems.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                style={[styles.albumCardMusic, { width: wp(35) }]}
-                onPress={() =>
-                  openPreview({
-                    title: item.name,
-                    subtitle: `${item.type} • ${item.year}`,
-                    image: item.cover,
-                    description: `Última edição: ${
-                      item.lastEditedAt
-                        ? new Date(item.lastEditedAt).toLocaleDateString("pt-PT")
-                        : "nunca"
-                    }.`,
-                  })
-                }
-              >
-                <View style={[styles.albumCoverLarge, { height: wp(35) }]}>
-                  <MediaPreview src={item.cover} />
-                </View>
-                <Text style={[styles.albumCardTitle, { fontSize: font(14) }]}>
-                  {item.name}
-                </Text>
-                <View style={styles.explicitRow}>
-                  <View style={styles.explicitBadge}>
-                    <Text style={[styles.explicitText, { fontSize: font(12) }]}>
-                      A
-                    </Text>
-                  </View>
-                  <Text style={[styles.explicitYear, { fontSize: font(14) }]}>
-                    {item.year}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          <View style={[styles.sectionHeader, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.sectionTitle, { fontSize: font(20) }]}>
-              Singles
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.albumScroll, { paddingHorizontal: wp(5) }]}
-          >
-            {singleItems.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                style={[styles.albumCardMusic, { width: wp(35) }]}
-                onPress={() =>
-                  openPreview({
-                    title: item.name,
-                    subtitle: `${item.type} • ${item.year}`,
-                    image: item.cover,
-                    description: `Saiu em ${item.releaseDate} às ${item.releaseTime}.`,
-                  })
-                }
-              >
-                <View style={[styles.albumCoverLarge, { height: wp(35) }]}>
-                  <MediaPreview src={item.cover} />
-                </View>
-                <Text style={[styles.albumCardTitle, { fontSize: font(14) }]}>
-                  {item.name}
-                </Text>
-                <View style={styles.explicitRow}>
-                  <View style={styles.explicitBadge}>
-                    <Text style={[styles.explicitText, { fontSize: font(12) }]}>
-                      S
-                    </Text>
-                  </View>
-                  <Text style={[styles.explicitYear, { fontSize: font(14) }]}>
-                    {item.year}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          <View style={[styles.bioSection, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.bioTitle, { fontSize: font(22) }]}>
-              Artist name
-            </Text>
-            <Text style={[styles.bioText, { fontSize: font(14) }]}>
-              Perfil artístico com lançamentos, imagens, produtos e posts ligados a
-              uma identidade visual mais cinematográfica.
-            </Text>
-            <Text style={[styles.bioDetail, { fontSize: font(15) }]}>
-              Full name: Artist name full.
-            </Text>
-            <Text style={[styles.bioDetail, { fontSize: font(15) }]}>
-              Birth date: DD/MM/YYYY.
-            </Text>
-            <Text style={[styles.bioDetail, { fontSize: font(15) }]}>
-              Styles artist: pop, funk, R&B.
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={styles.logoWrapper}
-            onPress={() =>
-              openPreview({
-                title: "Brand logo",
-                subtitle: "Identidade visual",
-                image:
-                  "https://www.iconsdb.com/icons/preview/white/nike-xxl.png",
-              })
-            }
-          >
-            <View style={styles.brandLogo}>
-              <Image
-                source={{
-                  uri: "https://www.iconsdb.com/icons/preview/white/nike-xxl.png",
-                }}
-                style={styles.boxImage}
-              />
-            </View>
-          </TouchableOpacity>
-
-          <View style={[styles.sectionHeader, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.sectionTitle, { fontSize: font(20) }]}>
-              New Drops
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.fashionScroll, { paddingHorizontal: wp(5) }]}
-          >
-            {FASHION_ITEMS.map((item, index) => (
-              <TouchableOpacity
-                key={`${item.title}-${index}`}
-                style={[styles.fashionCard, { width: wp(40) }]}
-                onPress={() => openPreview(item)}
-              >
-                <View style={[styles.fashionImage, { height: hp(28) }]}>
-                  <MediaPreview src={item.image} />
-                </View>
-                <Text style={[styles.fashionTitle, { fontSize: font(14) }]}>
-                  {item.title}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          <View style={[styles.sectionHeader, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.sectionTitle, { fontSize: font(20) }]}>
-              Most Popular
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.fashionScroll, { paddingHorizontal: wp(5) }]}
-          >
-            {FASHION_ITEMS.slice().reverse().map((item, index) => (
-              <TouchableOpacity
-                key={`${item.subtitle}-${index}`}
-                style={[styles.fashionCard, { width: wp(40) }]}
-                onPress={() => openPreview(item)}
-              >
-                <View style={[styles.fashionImage, { height: hp(28) }]}>
-                  <MediaPreview src={item.image} />
-                </View>
-                <Text style={[styles.fashionTitle, { fontSize: font(14) }]}>
-                  {item.title}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          <View style={[styles.sectionHeader, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.sectionTitle, { fontSize: font(20) }]}>
-              Gallery
-            </Text>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.fashionScroll, { paddingHorizontal: wp(5) }]}
-          >
-            {GALLERY_ITEMS.map((item, index) => (
-              <TouchableOpacity
-                key={`${item.title}-${index}`}
-                style={[styles.fashionCard, { width: wp(40) }]}
-                onPress={() => openPreview(item)}
-              >
-                <View style={[styles.fashionImage, { height: hp(28) }]}>
-                  <MediaPreview src={item.image} />
-                </View>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          <View style={[styles.sectionHeader, { paddingHorizontal: wp(5) }]}>
-            <Text style={[styles.sectionTitle, { fontSize: font(20) }]}>
-              Posts
-            </Text>
-          </View>
-          <View style={[styles.postsGrid, { paddingHorizontal: wp(5) }]}>
-            {activePosts.map((post) => (
-              <TouchableOpacity
-                key={post.id}
-                style={[
-                  styles.postBlock,
-                  { width: (wp(100) - wp(10) - 10) / 3, height: hp(25) },
-                ]}
-                onPress={() =>
-                  openPreview({
-                    title: post.title,
-                    subtitle: `${post.date} • ${post.time}`,
-                    image: post.image,
-                    description: post.caption,
-                  })
-                }
-              >
-                <MediaPreview src={post.image} />
-              </TouchableOpacity>
-            ))}
+          <View style={styles.statBlock}>
+            <Text style={styles.statLabel}>Posts</Text>
+            <Text style={styles.statValue}>{posts.length}</Text>
           </View>
         </View>
+
+        {profileUser?.bio ||
+        publicInfoRows.length > 0 ||
+        spotifyUrl ||
+        isOwnProfile ? (
+          <View style={styles.section}>
+            {profileUser?.bio ? (
+              <Text style={styles.bioText}>{profileUser.bio}</Text>
+            ) : isOwnProfile ? (
+              <Text style={styles.emptyText}>
+                Adiciona uma biografia ao teu perfil.
+              </Text>
+            ) : null}
+            {publicInfoRows.length > 0 ? (
+              <View style={styles.profileInfoGrid}>
+                {publicInfoRows.map((row) => (
+                  <View key={row.label} style={styles.profileInfoRow}>
+                    <Ionicons name={row.icon} size={14} color="#777" />
+                    <Text style={styles.profileInfoLabel}>{row.label}</Text>
+                    <Text style={styles.profileInfoValue}>{row.value}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+            {isOwnProfile && profileHiddenFields.length > 0 ? (
+              <Text style={styles.hiddenInfoText}>
+                Oculto:{" "}
+                {profileHiddenFields
+                  .map((field) => PROFILE_FIELD_LABELS[field] ?? field)
+                  .join(", ")}
+              </Text>
+            ) : null}
+            {spotifyUrl ? (
+              <TouchableOpacity
+                style={styles.spotifyButton}
+                onPress={() => openUrl(spotifyUrl)}
+              >
+                <Text style={styles.spotifyButtonText}>Spotify</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
+
+        {profilePreRelease ? (
+          <Pressable
+            style={[styles.profilePreRelease, { width: wp(100) }]}
+            onPress={() => openProfileAlbum(profilePreRelease)}
+          >
+            {profilePreRelease.coverUrl ? (
+              <Image
+                blurRadius={20}
+                source={{ uri: profilePreRelease.coverUrl }}
+                style={styles.profilePreReleaseColorSample}
+              />
+            ) : null}
+            <Svg height={138} pointerEvents="none" style={styles.profilePreReleaseFade} width={wp(100)}>
+              <Defs>
+                <LinearGradient id="profilePreReleaseFade" x1="0" x2="1" y1="0" y2="0">
+                  <Stop offset="0" stopColor="#000" stopOpacity="0.08" />
+                  <Stop offset="0.38" stopColor="#000" stopOpacity="0.52" />
+                  <Stop offset="0.64" stopColor="#000" stopOpacity="0.94" />
+                  <Stop offset="0.8" stopColor="#000" />
+                  <Stop offset="1" stopColor="#000" stopOpacity="1" />
+                </LinearGradient>
+              </Defs>
+              <Rect fill="url(#profilePreReleaseFade)" height="100%" width="100%" />
+            </Svg>
+            <MediaBox uri={profilePreRelease.coverUrl} style={styles.profilePreReleaseCover} />
+            <View style={styles.profilePreReleaseInfo}>
+              <Text style={styles.profilePreReleaseEyebrow}>Pré-lançamento</Text>
+              <Text numberOfLines={1} style={styles.profilePreReleaseTitle}>
+                {profilePreRelease.title}
+              </Text>
+              <Text style={styles.profilePreReleaseMeta}>
+                {profilePreRelease.type === "ep"
+                  ? "EP"
+                  : profilePreRelease.type === "album"
+                    ? "Álbum"
+                    : "Single"}{" "}
+                · {profilePreRelease.trackIds.length} faixas
+              </Text>
+              <View style={styles.profilePreReleaseTime}>
+                {countdownParts(profilePreReleaseCountdownTarget, countdownNow).map((part, index) => (
+                  <React.Fragment key={index}>
+                    {index > 0 ? <Text style={styles.profilePreReleaseTimeSeparator}>:</Text> : null}
+                    <View style={styles.profilePreReleaseTimeBox}>
+                      <Text style={styles.profilePreReleaseTimeLabel}>
+                        {["Hora", "Min", "Seg"][index]}
+                      </Text>
+                      <Text style={styles.profilePreReleaseTimeText}>{part}</Text>
+                    </View>
+                  </React.Fragment>
+                ))}
+              </View>
+            </View>
+          </Pressable>
+        ) : null}
+
+        {mostLikedTrack ? (
+          <Pressable
+            style={styles.topTrackCard}
+            onPress={() => {
+              const release = albums.find(
+                (album) =>
+                  album.id === mostLikedTrack.albumId ||
+                  album.trackIds.includes(mostLikedTrack.id),
+              );
+              if (release) openProfileAlbum(release);
+            }}
+          >
+            <View style={styles.topTrackCoverWrap}>
+              <MediaBox uri={mostLikedTrack.coverUrl} style={styles.topTrackCover} />
+              <Pressable
+                style={({ pressed }) => [
+                  styles.coverPlayButton,
+                  pressed ? styles.playButtonPressed : null,
+                ]}
+                onPress={(event) => {
+                  event.stopPropagation();
+                  void playProfileTrack(mostLikedTrack);
+                }}
+              >
+                <Ionicons name="play" size={17} color="#06110d" />
+              </Pressable>
+            </View>
+            <View style={styles.topTrackInfo}>
+              <Text style={styles.topTrackEyebrow}>Mais curtida</Text>
+              <Text style={styles.topTrackTitle} numberOfLines={2}>{mostLikedTrack.title}</Text>
+              <Text style={styles.topTrackMeta}>
+                {relativeDate(mostLikedTrack.releaseDate)} · {mostLikedTrack.likesCount} curtidas
+              </Text>
+            </View>
+          </Pressable>
+        ) : null}
+
+        {albumReleases.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Albuns</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {albumReleases.map((album) => (
+                <Pressable key={album.id} style={styles.albumCard} onPress={() => openProfileAlbum(album)}>
+                  <View style={styles.albumCoverWrap}>
+                    <MediaBox uri={album.coverUrl} style={styles.albumCover} />
+                    <Pressable style={({ pressed }) => [styles.coverPlayButton, pressed ? styles.playButtonPressed : null]} onPress={(event) => { event.stopPropagation(); void playProfileAlbum(album); }}>
+                      <Ionicons name="play" size={17} color="#06110d" />
+                    </Pressable>
+                  </View>
+                  <Text style={styles.cardTitle} numberOfLines={1}>
+                    {album.title}
+                  </Text>
+                  <Text style={styles.cardMeta}>{relativeDate(album.releaseDate)}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
+
+        {singleAndEpReleases.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Singles e EPs</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {singleAndEpReleases.map((album) => (
+                <Pressable key={album.id} style={styles.albumCard} onPress={() => openProfileAlbum(album)}>
+                  <View style={styles.albumCoverWrap}>
+                    <MediaBox uri={album.coverUrl} style={styles.albumCover} />
+                    <Pressable style={({ pressed }) => [styles.coverPlayButton, pressed ? styles.playButtonPressed : null]} onPress={(event) => { event.stopPropagation(); void playProfileAlbum(album); }}>
+                      <Ionicons name="play" size={17} color="#06110d" />
+                    </Pressable>
+                  </View>
+                  <Text style={styles.cardTitle} numberOfLines={1}>{album.title}</Text>
+                  <Text style={styles.cardMeta}>{relativeDate(album.releaseDate)}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
+
+        {albums.length === 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.emptyText}>Ainda nao ha lancamentos publicados.</Text>
+          </View>
+        ) : null}
+
+        {merchLogoUrl || merchProducts.length > 0 || merchGallery.length > 0 ? (
+          <View style={[styles.section, styles.merchSection]}>
+            <View style={styles.merchHeader}>
+              {merchLogoUrl ? (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() =>
+                    openUrl(profileUser?.shopUrl || merchProducts[0]?.linkUrl)
+                  }
+                >
+                  <Image
+                    source={{ uri: merchLogoUrl }}
+                    style={styles.merchLogo}
+                  />
+                </TouchableOpacity>
+              ) : null}
+              <Text style={styles.merchTitle}>
+                {merchName || "Merchandise"}
+              </Text>
+            </View>
+
+            {merchProducts.length > 0 ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.productRail}
+              >
+                {merchProducts.map((product) => (
+                  <TouchableOpacity
+                    key={product.id}
+                    style={styles.productCard}
+                    onPress={() => openUrl(product.linkUrl)}
+                  >
+                    <MediaBox
+                      uri={product.imageUrl}
+                      style={styles.productImage}
+                    />
+                    <Text style={styles.cardTitle} numberOfLines={1}>
+                      {product.title}
+                    </Text>
+                    {product.price ? (
+                      <Text style={styles.cardMeta}>
+                        {product.currency === "USD" ? "$" : product.currency === "GBP" ? "£" : product.currency === "EUR" ? "€" : ""}
+                        {product.price}
+                      </Text>
+                    ) : null}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : null}
+
+            {merchGallery.length > 0 ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.galleryRail}
+              >
+                {merchGallery.map((item) => (
+                  <View key={item.id} style={styles.galleryCard}>
+                    <MediaBox uri={item.mediaUrl} style={styles.galleryImage} />
+                    {item.mediaType === "video" ? (
+                      <Text style={styles.cardMeta}>Video</Text>
+                    ) : null}
+                  </View>
+                ))}
+              </ScrollView>
+            ) : null}
+          </View>
+        ) : null}
+
+        <View style={styles.section}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionTitle}>Posts</Text>
+            {isOwnProfile ? (
+              <TouchableOpacity
+                style={styles.sectionIconButton}
+                onPress={() =>
+                  router.push("/main/components/PopUpCreate/createPost")
+                }
+              >
+                <Ionicons name="add" size={20} color="#000" />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          {posts.length === 0 ? (
+            isOwnProfile ? (
+              <TouchableOpacity
+                style={styles.createMusicButton}
+                onPress={() =>
+                  router.push("/main/components/PopUpCreate/createPost")
+                }
+              >
+                <Text style={styles.createMusicText}>Criar post</Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.emptyText}>
+                Ainda nao ha posts publicados.
+              </Text>
+            )
+          ) : (
+            <View style={styles.postsGrid}>
+              {posts.map((post, index) => (
+                <PostGridTile
+                  key={post.id}
+                  post={post}
+                  onPress={() => setActivePostIndex(index)}
+                />
+              ))}
+            </View>
+          )}
+        </View>
       </Animated.ScrollView>
+
+      <Modal
+        visible={activePostIndex !== null}
+        animationType="fade"
+        transparent={false}
+        onRequestClose={() => setActivePostIndex(null)}
+      >
+        <ScrollView
+          pagingEnabled
+          showsVerticalScrollIndicator={false}
+          contentOffset={{
+            x: 0,
+            y: activePostIndex === null ? 0 : activePostIndex * hp(100),
+          }}
+        >
+          {posts.map((post) => (
+            <View key={`full-${post.id}`} style={{ height: hp(100) }}>
+              <FullscreenPost
+                post={post}
+                onClose={() => setActivePostIndex(null)}
+                onDelete={handleDeletePost}
+                canDelete={user?.uid === post.ownerId}
+              />
+            </View>
+          ))}
+        </ScrollView>
+      </Modal>
+
+      <Modal transparent visible={editMenuVisible} animationType="fade">
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setEditMenuVisible(false)}
+        >
+          <Pressable
+            style={styles.menuCard}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => {
+                setEditMenuVisible(false);
+                router.push("/main/settings/account");
+              }}
+            >
+              <Ionicons name="person-circle-outline" size={20} color="#fff" />
+              <Text style={styles.menuText}>Dados publicos</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => {
+                setEditMenuVisible(false);
+                router.push("/main/profile/edit-profile");
+              }}
+            >
+              <Ionicons name="create-outline" size={20} color="#fff" />
+              <Text style={styles.menuText}>Perfil publico</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => {
+                setEditMenuVisible(false);
+                setConnectEditorVisible(true);
+              }}
+            >
+              <Ionicons name="link-outline" size={20} color="#fff" />
+              <Text style={styles.menuText}>Conectar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => {
+                setEditMenuVisible(false);
+                setAvatarEditorVisible(true);
+              }}
+            >
+              <Ionicons name="image-outline" size={20} color="#fff" />
+              <Text style={styles.menuText}>Avatar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => setEditMenuVisible(false)}
+            >
+              <Ionicons name="options-outline" size={20} color="#fff" />
+              <Text style={styles.menuText}>Organizar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => {
+                setEditMenuVisible(false);
+                setMerchMode("home");
+                setMerchEditorVisible(true);
+              }}
+            >
+              <Ionicons name="shirt-outline" size={20} color="#fff" />
+              <Text style={styles.menuText}>Merchandise</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal transparent visible={connectEditorVisible} animationType="fade">
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setConnectEditorVisible(false)}
+        >
+          <Pressable
+            style={styles.editorCard}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <Text style={styles.editorTitle}>Conectar</Text>
+            <TextInput
+              value={spotifyUrl}
+              onChangeText={setSpotifyUrl}
+              placeholder="Link do perfil Spotify"
+              placeholderTextColor="#777"
+              autoCapitalize="none"
+              style={styles.input}
+            />
+            <TouchableOpacity
+              style={styles.greenButton}
+              onPress={handleSaveSpotify}
+            >
+              <Text style={styles.greenButtonText}>Guardar Spotify</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal transparent visible={avatarEditorVisible} animationType="fade">
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setAvatarEditorVisible(false)}
+        >
+          <Pressable
+            style={styles.avatarStudioCard}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <View style={styles.merchStudioHeader}>
+              <View style={styles.trackTextBlock}>
+                <Text style={styles.merchEyebrow}>Sonnor</Text>
+                <Text style={styles.merchStudioTitle}>Avatar</Text>
+              </View>
+            </View>
+            <View style={styles.avatarPreviewFrame}>
+              {avatarUrl ? (
+                <Image
+                  source={{ uri: avatarUrl }}
+                  style={styles.avatarPreviewImage}
+                />
+              ) : (
+                <Ionicons name="person-outline" size={54} color="#777" />
+              )}
+            </View>
+            <TouchableOpacity
+              style={styles.greenButton}
+              onPress={handlePickAvatar}
+            >
+              <Text style={styles.greenButtonText}>Escolher imagem</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={() => setAvatarEditorVisible(false)}
+            >
+              <Text style={styles.secondaryButtonText}>Cancelar</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal transparent visible={merchEditorVisible} animationType="fade">
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setMerchEditorVisible(false)}
+        >
+          <Pressable
+            style={styles.merchStudioCard}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={styles.merchStudioHeader}>
+                {merchMode !== "home" ? (
+                  <TouchableOpacity
+                    style={styles.merchBackButton}
+                    onPress={() => setMerchMode("home")}
+                  >
+                    <Ionicons name="chevron-back" size={20} color="#fff" />
+                  </TouchableOpacity>
+                ) : null}
+                <View style={styles.trackTextBlock}>
+                  <Text style={styles.merchEyebrow}>Sonnor</Text>
+                  <Text style={styles.merchStudioTitle}>Merchandise</Text>
+                </View>
+              </View>
+
+              {merchMode === "home" ? (
+                <View style={styles.merchActionStack}>
+                  <TouchableOpacity
+                    style={styles.merchActionCard}
+                    onPress={() => setMerchMode("logo")}
+                  >
+                    <View style={styles.merchActionIcon}>
+                      <Ionicons
+                        name="storefront-outline"
+                        size={24}
+                        color="#6F8FAF"
+                      />
+                    </View>
+                    <View style={styles.trackTextBlock}>
+                      <Text style={styles.merchActionTitle}>Nome e logo</Text>
+                      <Text style={styles.merchActionText}>
+                        Nome da marca e imagem principal.
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="#777" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.merchActionCard}
+                    onPress={() => {
+                      clearProductForm();
+                      setMerchMode("product");
+                    }}
+                  >
+                    <View style={styles.merchActionIcon}>
+                      <Ionicons
+                        name="shirt-outline"
+                        size={24}
+                        color="#6F8FAF"
+                      />
+                    </View>
+                    <View style={styles.trackTextBlock}>
+                      <Text style={styles.merchActionTitle}>
+                        Adicionar peca
+                      </Text>
+                      <Text style={styles.merchActionText}>
+                        Produto, foto, preco e link direto.
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="#777" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.merchActionCard}
+                    onPress={() => setMerchMode("gallery")}
+                  >
+                    <View style={styles.merchActionIcon}>
+                      <Ionicons
+                        name="images-outline"
+                        size={24}
+                        color="#6F8FAF"
+                      />
+                    </View>
+                    <View style={styles.trackTextBlock}>
+                      <Text style={styles.merchActionTitle}>Galeria</Text>
+                      <Text style={styles.merchActionText}>
+                        Fotos ou videos dos modelos.
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="#777" />
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+
+              {merchMode === "logo" ? (
+                <View style={styles.merchPanel}>
+                  <TextInput
+                    value={merchName}
+                    onChangeText={setMerchName}
+                    placeholder="Nome do merchandise"
+                    placeholderTextColor="#777"
+                    style={styles.input}
+                  />
+                  <TextInput
+                    value={shopUrl}
+                    onChangeText={setShopUrl}
+                    placeholder="Link da loja"
+                    placeholderTextColor="#777"
+                    autoCapitalize="none"
+                    style={styles.input}
+                  />
+                  <TouchableOpacity
+                    style={styles.logoPicker}
+                    onPress={handlePickLogo}
+                  >
+                    {merchLogoUrl ? (
+                      <Image
+                        source={{ uri: merchLogoUrl }}
+                        style={styles.logoPreview}
+                      />
+                    ) : (
+                      <Ionicons name="image-outline" size={28} color="#fff" />
+                    )}
+                    <Text style={styles.secondaryButtonText}>
+                      {merchLogoUrl ? "Editar logo" : "Adicionar logo PNG/GIF"}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.greenButton}
+                    onPress={handleSaveMerchBrand}
+                  >
+                    <Text style={styles.greenButtonText}>
+                      Guardar merchandise
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+
+              {merchMode === "product" ? (
+                <View style={styles.merchPanel}>
+                  <TextInput
+                    value={productTitle}
+                    onChangeText={setProductTitle}
+                    placeholder="Nome da peca"
+                    placeholderTextColor="#777"
+                    style={styles.input}
+                  />
+                  <TextInput
+                    value={productLink}
+                    onChangeText={setProductLink}
+                    placeholder="Link direto da compra"
+                    placeholderTextColor="#777"
+                    style={styles.input}
+                  />
+                  <View style={styles.priceRow}>
+                    <TextInput
+                      value={productPrice}
+                      onChangeText={setProductPrice}
+                      placeholder="Preco"
+                      placeholderTextColor="#777"
+                      keyboardType="decimal-pad"
+                      style={[styles.input, styles.priceInput]}
+                    />
+                    <View style={styles.currencyGrid}>
+                      {["EUR", "USD", "GBP"].map((currency) => (
+                        <TouchableOpacity
+                          key={currency}
+                          style={[styles.currencyButton, productCurrency === currency ? styles.currencyButtonActive : null]}
+                          onPress={() => setProductCurrency(currency)}
+                        >
+                          <Text style={[styles.currencyText, productCurrency === currency ? styles.currencyTextActive : null]}>
+                            {currency === "EUR" ? "€" : currency === "USD" ? "$" : "£"}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.secondaryButton}
+                    onPress={handlePickProductImage}
+                  >
+                    <Text style={styles.secondaryButtonText}>
+                      {productImageUrl
+                        ? "Trocar foto da peca"
+                        : "Adicionar foto da peca"}
+                    </Text>
+                  </TouchableOpacity>
+                  {productImageUrl ? (
+                    <MediaBox
+                      uri={productImageUrl}
+                      style={styles.productPreview}
+                    />
+                  ) : null}
+                  <TouchableOpacity
+                    style={styles.greenButton}
+                    onPress={handleSaveProduct}
+                  >
+                    <Text style={styles.greenButtonText}>
+                      {selectedProduct ? "Guardar peca" : "Adicionar peca"}
+                    </Text>
+                  </TouchableOpacity>
+                  {selectedProduct ? (
+                    <TouchableOpacity
+                      style={styles.dangerButton}
+                      onPress={() => handleDeleteProduct(selectedProduct.id)}
+                    >
+                      <Ionicons
+                        name="trash-outline"
+                        size={18}
+                        color="#ff8a8a"
+                      />
+                      <Text style={styles.dangerButtonText}>Apagar peca</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              ) : null}
+
+              {merchMode === "gallery" ? (
+                <View style={styles.merchPanel}>
+                  <TouchableOpacity
+                    style={styles.greenButton}
+                    onPress={handleAddGalleryItem}
+                  >
+                    <Text style={styles.greenButtonText}>
+                      Adicionar foto ou video
+                    </Text>
+                  </TouchableOpacity>
+                  {merchGallery.map((item) => (
+                    <View key={item.id} style={styles.editorListRow}>
+                      <MediaBox
+                        uri={item.mediaUrl}
+                        style={styles.editorThumb}
+                      />
+                      <Text style={[styles.trackTitle, styles.editorListTitle]}>
+                        {item.mediaType === "video" ? "Video" : "Foto"}
+                      </Text>
+                      <Pressable
+                        style={styles.iconDangerButton}
+                        onPress={() => handleDeleteGalleryItem(item.id)}
+                      >
+                        <Ionicons
+                          name="trash-outline"
+                          size={18}
+                          color="#ff8a8a"
+                        />
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+
+              {merchProducts.length > 0 && merchMode === "home" ? (
+                <View style={styles.merchExistingBlock}>
+                  <Text style={styles.editorSubtitle}>Pecas guardadas</Text>
+                  {merchProducts.map((product) => (
+                    <TouchableOpacity
+                      key={product.id}
+                      style={styles.editorListRow}
+                      onPress={() => editProduct(product)}
+                    >
+                      <MediaBox
+                        uri={product.imageUrl}
+                        style={styles.editorThumb}
+                      />
+                      <View style={styles.trackTextBlock}>
+                        <Text style={styles.trackTitle}>{product.title}</Text>
+                        <Text style={styles.trackMeta}>
+                          {product.price || "Sem preco"}
+                        </Text>
+                      </View>
+                      <Pressable
+                        style={styles.iconDangerButton}
+                        onPress={(event) => {
+                          event.stopPropagation();
+                          handleDeleteProduct(product.id);
+                        }}
+                      >
+                        <Ionicons
+                          name="trash-outline"
+                          size={18}
+                          color="#ff8a8a"
+                        />
+                      </Pressable>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : null}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#000" },
-  profileBackgroundImage: {
-    ...StyleSheet.absoluteFillObject,
-    opacity: 0.28,
-  },
-  profileBackgroundOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.7)",
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    justifyContent: "center",
-    paddingHorizontal: 20,
-  },
-  editMenuCard: {
-    alignSelf: "center",
-    width: "100%",
-    maxWidth: 360,
-    borderRadius: 22,
-    paddingVertical: 10,
-    backgroundColor: "rgba(12,12,12,0.96)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-  editMenuOption: {
-    paddingHorizontal: 18,
-    paddingVertical: 15,
-  },
-  editMenuText: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  managerCard: {
-    width: "100%",
-    maxWidth: 460,
-    maxHeight: "84%",
-    alignSelf: "center",
-    borderRadius: 24,
-    backgroundColor: "rgba(10,10,10,0.98)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    overflow: "hidden",
-  },
-  managerHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 18,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.06)",
-  },
-  managerTitle: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  managerScroll: {
-    flex: 1,
-  },
-  managerScrollContent: {
-    padding: 18,
-    paddingBottom: 30,
-  },
-  managerSectionTitle: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
-    marginBottom: 12,
-    marginTop: 8,
-  },
-  managerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)",
-    padding: 10,
-    marginBottom: 10,
-  },
-  managerRowActive: {
-    borderColor: "rgba(255,255,255,0.32)",
-    backgroundColor: "rgba(255,255,255,0.07)",
-  },
-  managerRowRemoved: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
-    backgroundColor: "rgba(255,255,255,0.02)",
-    padding: 10,
-    marginBottom: 10,
-    opacity: 0.9,
-  },
-  managerThumb: {
-    width: 54,
-    height: 54,
-    borderRadius: 14,
-  },
-  managerRowText: {
-    flex: 1,
-  },
-  managerRowTitle: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  managerRowMeta: {
-    color: "#9c9c9c",
-    fontSize: 12,
-    marginTop: 2,
-  },
-  managerRowHint: {
-    color: "#cfcfcf",
-    fontSize: 12,
-    marginTop: 4,
-  },
-  editorCard: {
-    marginTop: 14,
-    padding: 14,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-  editorTitle: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
-    marginBottom: 12,
-  },
-  editorPreviewRow: {
-    flexDirection: "row",
-    gap: 12,
-    marginBottom: 14,
-  },
-  editorCoverPreview: {
-    width: 92,
-    height: 92,
-    borderRadius: 18,
-  },
-  editorBackgroundBlock: {
-    flex: 1,
-  },
-  editorBackgroundPreview: {
-    width: "100%",
-    height: 92,
-    borderRadius: 18,
-  },
-  editorBackgroundPlaceholder: {
-    flex: 1,
-    height: 92,
-    borderRadius: 18,
-    backgroundColor: "#111",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-  editorBackgroundPlaceholderText: {
-    color: "#888",
-    fontSize: 12,
-  },
-  editorInput: {
-    minHeight: 48,
-    borderRadius: 14,
-    backgroundColor: "#111",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    color: "#fff",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 12,
-  },
-  editorInputDisabled: {
-    opacity: 0.6,
-  },
-  multilineInput: {
-    minHeight: 92,
-    textAlignVertical: "top",
-  },
-  lockedText: {
-    color: "#d6c79d",
-    fontSize: 12,
-    lineHeight: 18,
-    marginBottom: 12,
-  },
-  editorActionRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  secondaryButton: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 12,
-    marginBottom: 10,
-  },
-  secondaryButtonText: {
-    color: "#fff",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  subtleButton: {
-    minHeight: 42,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
-    marginBottom: 10,
-  },
-  subtleButtonText: {
-    color: "#d1d1d1",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  primaryButton: {
-    minHeight: 46,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#fff",
-    marginBottom: 12,
-  },
-  primaryButtonText: {
-    color: "#000",
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  dangerButton: {
-    minHeight: 46,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(210,62,62,0.14)",
-    borderWidth: 1,
-    borderColor: "rgba(210,62,62,0.35)",
-  },
-  dangerButtonText: {
-    color: "#ff8d8d",
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  emptyListText: {
-    color: "#8b8b8b",
-    fontSize: 15,
-    textAlign: "center",
-    marginBottom: 10,
-  },
-  previewCard: {
-    width: "100%",
-    maxWidth: 380,
-    alignSelf: "center",
-    borderRadius: 24,
-    padding: 16,
-    backgroundColor: "rgba(10,10,10,0.98)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-  previewImage: {
-    width: "100%",
-    height: 260,
-    borderRadius: 18,
-    marginBottom: 14,
-  },
-  previewTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "700",
-  },
-  previewSubtitle: {
-    color: "#a4a4a4",
-    fontSize: 13,
-    marginTop: 4,
-  },
-  previewDescription: {
-    color: "#d2d2d2",
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 12,
-  },
-  container: { flex: 1 },
+  content: { paddingBottom: 180 },
   bannerFixed: {
     position: "absolute",
     top: 0,
@@ -1920,59 +2011,6 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 20,
     borderBottomLeftRadius: 20,
   },
-  bannerArtist: { width: "100%", height: "100%", resizeMode: "cover" },
-  bannerOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 2,
-  },
-  bannerDarkOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.22)",
-    zIndex: 3,
-  },
-  bannerContent: {
-    position: "absolute",
-    left: 20,
-    right: 20,
-    bottom: 10,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  compactContent: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 10,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    zIndex: 8,
-  },
-  bannerLeft: { flexShrink: 1 },
-  artistName: { color: "#fff", fontWeight: "800" },
-  artistRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
-  artistStudio: { color: "#fff", opacity: 0.95 },
-  verifyBadge: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: "rgba(0,0,0,0.65)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: 8,
-  },
-  followButton: {
-    backgroundColor: "rgba(0,0,0,0.85)",
-    paddingHorizontal: 22,
-    paddingVertical: 10,
-    borderRadius: 26,
-  },
-  followText: { color: "#fff", fontWeight: "700" },
   bannerBackground: {
     position: "absolute",
     top: 0,
@@ -1980,104 +2018,799 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
-  bannerBottomFade: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 120,
-    zIndex: 4,
+  bannerArtist: { width: "100%", height: "100%", resizeMode: "cover" },
+  bannerDarkOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.28)",
+    zIndex: 3,
   },
-  content: { paddingTop: 20 },
+  bannerContent: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    bottom: 12,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    gap: 14,
+    zIndex: 6,
+  },
+  compactContent: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 12,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    zIndex: 8,
+  },
+  bannerLeft: { flex: 1 },
+  artistName: { color: "#fff", fontWeight: "900" },
+  artistNameRow: { flexDirection: "row", alignItems: "center", gap: 9, flexWrap: "wrap" },
+  compactNameRow: { flex: 1, flexDirection: "row", alignItems: "center", gap: 6 },
+  verifiedProfilePill: { flexDirection: "row", alignItems: "center", gap: 6 },
+  smallVerifiedProfilePill: { flexDirection: "row", alignItems: "center", gap: 5 },
+  verifyBadge: { width: 23, height: 23, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#2d7dff" },
+  smallVerifyBadge: { width: 15, height: 15, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#2d7dff" },
+  verifiedProfileText: { color: "#eeeeee", fontSize: 12, fontWeight: "900" },
+  artistStudio: { color: "#fff", opacity: 0.92, marginTop: 4 },
+  hero: { width: "100%", justifyContent: "flex-end", backgroundColor: "#111" },
+  heroImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
+  },
+  heroShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
+  avatarMenuButton: {
+    position: "absolute",
+    top: 52,
+    left: 18,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    backgroundColor: "rgba(0,0,0,0.38)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.35)",
+  },
+  avatarMenuImage: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 28,
+    resizeMode: "cover",
+  },
+  heroContent: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 14,
+    paddingHorizontal: 20,
+    paddingBottom: 24,
+  },
+  identityBlock: { flex: 1 },
+  name: { color: "#fff", fontWeight: "900" },
+  username: { color: "#ddd", marginTop: 4, fontSize: 14 },
+  followButton: {
+    borderRadius: 999,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: "#fff",
+  },
+  followingButton: {
+    backgroundColor: "rgba(255,255,255,0.22)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+  },
+  followText: { color: "#000", fontWeight: "900" },
   statsRow: {
     flexDirection: "row",
     justifyContent: "space-around",
-    paddingBottom: 20,
+    paddingVertical: 18,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.08)",
   },
-  statBlock: { alignItems: "center" },
-  statTitle: { color: "#fff", fontWeight: "600" },
-  statNumber: { color: "#fff" },
-  sectionHeader: { paddingTop: 20, paddingBottom: 10 },
-  sectionTitle: { color: "#fff", fontWeight: "700" },
-  lastDropRow: {
+  statBlock: { alignItems: "center", gap: 4 },
+  statLabel: { color: "#aaa", fontSize: 12, textTransform: "uppercase" },
+  statValue: { color: "#fff", fontSize: 18, fontWeight: "800" },
+  section: { paddingHorizontal: 20, paddingTop: 32 },
+  sectionHeaderRow: {
+    minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 14,
   },
-  lastDropCover: { borderRadius: 22, overflow: "hidden", marginRight: 20 },
-  lastDropInfo: { flexShrink: 1 },
-  lastDropTitle: { color: "#fff", fontWeight: "800" },
-  lastDropSubtitle: { color: "#777" },
-  top5Scroll: {},
-  topCard: { marginRight: 16 },
-  topCardCover: {
-    width: "100%",
-    borderRadius: 22,
-    overflow: "hidden",
+  sectionTitle: {
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "900",
+    marginBottom: 14,
   },
-  topCardTitle: { color: "#fff", marginTop: 6, fontWeight: "700" },
-  topCardSubtitle: { color: "#777" },
-  timelineScroll: { paddingVertical: 20 },
-  timelineBlock: { marginRight: 20 },
-  timelineCover: {
-    width: "100%",
-    borderRadius: 22,
-    overflow: "hidden",
+  sectionIconButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fff",
   },
-  timelineTitle: { color: "#fff", marginTop: 6, fontWeight: "700" },
-  timelineSubtitle: { color: "#777" },
-  albumScroll: {
-    paddingVertical: 20,
-    flexDirection: "row",
-  },
-  albumCardMusic: { marginRight: 20 },
-  albumCoverLarge: {
-    width: "100%",
-    borderRadius: 22,
-    overflow: "hidden",
-  },
-  albumCardTitle: { color: "#fff", marginTop: 6, fontWeight: "700" },
-  explicitRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
-  explicitBadge: {
-    backgroundColor: "#333",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  explicitText: { color: "#fff", fontWeight: "800" },
-  explicitYear: { color: "#777" },
-  bioSection: { paddingVertical: 20 },
-  bioTitle: { color: "#fff", fontWeight: "800" },
-  bioText: { color: "#ddd", marginTop: 10, lineHeight: 22 },
-  bioDetail: { color: "#fff", marginTop: 12 },
-  logoWrapper: { alignItems: "center", marginVertical: 120 },
-  brandLogo: { width: 120, height: 120, borderRadius: 20, overflow: "hidden" },
-  fashionScroll: {
-    paddingVertical: 20,
-    flexDirection: "row",
-  },
-  fashionCard: { marginRight: 20 },
-  fashionImage: {
-    width: "100%",
-    borderRadius: 22,
-    overflow: "hidden",
-  },
-  fashionTitle: { color: "#fff", marginTop: 6, fontWeight: "700" },
-  postsGrid: {
+  bioText: { color: "#ddd", fontSize: 14, lineHeight: 22 },
+  bioMetaText: { color: "#aaa", fontSize: 13, lineHeight: 20, marginTop: 8 },
+  profileInfoGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 14,
   },
-  postBlock: {
+  profileInfoRow: { flexDirection: "row", alignItems: "center", gap: 5 },
+  profileInfoLabel: { color: "#747474", fontSize: 12, fontWeight: "800" },
+  profileInfoValue: { color: "#a6a6a6", fontSize: 13, fontWeight: "800" },
+  hiddenInfoText: {
+    color: "#5f5f5f",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 12,
+  },
+  spotifyButton: {
+    alignSelf: "flex-start",
+    marginTop: 14,
+    borderRadius: 999,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    backgroundColor: "#6F8FAF",
+    borderWidth: 1,
+    borderColor: "#000",
+  },
+  spotifyButtonText: { color: "#000", fontWeight: "900" },
+  emptyText: { color: "#888", fontSize: 14, lineHeight: 20 },
+  topTrackCard: {
+    marginHorizontal: 20,
+    marginTop: 26,
+    padding: 12,
     borderRadius: 22,
-    overflow: "hidden",
-    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 15,
+    backgroundColor: "rgba(111,143,175,0.13)",
   },
-  postEditorPreview: {
+  topTrackCoverWrap: { width: 104, height: 104 },
+  topTrackCover: { width: 104, height: 104, borderRadius: 16, overflow: "hidden" },
+  topTrackInfo: { flex: 1 },
+  topTrackEyebrow: { color: "#6F8FAF", fontSize: 11, fontWeight: "900", textTransform: "uppercase" },
+  topTrackTitle: { color: "#fff", fontSize: 21, lineHeight: 25, fontWeight: "900", marginTop: 6 },
+  topTrackMeta: { color: "#9eaaa6", fontSize: 12, fontWeight: "800", marginTop: 8 },
+  profilePreRelease: {
+    alignItems: "center",
+    flexDirection: "row",
+    height: 138,
+    marginLeft: -22,
+    marginTop: 28,
+    overflow: "hidden",
+    paddingHorizontal: 22,
+    paddingVertical: 14,
+  },
+  profilePreReleaseColorSample: {
+    height: 8,
+    left: "50%",
+    opacity: 1,
+    position: "absolute",
+    top: "50%",
+    transform: [{ scale: 110 }],
+    width: 8,
+  },
+  profilePreReleaseFade: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+  },
+  profilePreReleaseCover: {
+    borderRadius: 13,
+    height: 104,
+    marginLeft: 22,
+    overflow: "hidden",
+    width: 104,
+  },
+  profilePreReleaseInfo: {
+    flex: 1,
+    marginLeft: 14,
+  },
+  profilePreReleaseEyebrow: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  profilePreReleaseTitle: {
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "900",
+    marginTop: 5,
+  },
+  profilePreReleaseMeta: {
+    color: "rgba(255,255,255,0.74)",
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 4,
+  },
+  profilePreReleaseTime: {
+    alignItems: "center",
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    marginTop: 10,
+  },
+  profilePreReleaseTimeBox: {
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    minWidth: 42,
+    paddingHorizontal: 6,
+    paddingVertical: 5,
+  },
+  profilePreReleaseTimeLabel: {
+    color: "#777",
+    fontSize: 7,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  profilePreReleaseTimeSeparator: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "900",
+    marginHorizontal: 3,
+  },
+  profilePreReleaseTimeText: {
+    color: "#000",
+    fontSize: 14,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "900",
+    marginTop: 1,
+  },
+  albumCard: { width: 138, marginRight: 16 },
+  albumCoverWrap: { width: 138, height: 138 },
+  albumCover: { width: 138, height: 138, borderRadius: 16, overflow: "hidden" },
+  coverPlayButton: {
+    position: "absolute",
+    right: 8,
+    bottom: 8,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#6F8FAF",
+  },
+  playButtonPressed: { opacity: 0.42, transform: [{ scale: 0.9 }] },
+  cardTitle: { color: "#fff", fontWeight: "800", marginTop: 8 },
+  cardMeta: { color: "#999", fontSize: 12, marginTop: 3 },
+  trackTextBlock: { flex: 1 },
+  trackTitle: { color: "#fff", fontSize: 15, fontWeight: "800" },
+  trackMeta: { color: "#aaa", fontSize: 12, marginTop: 3 },
+  postsGrid: { flexDirection: "row", flexWrap: "wrap" },
+  postGridTile: {
+    width: "33.3333%",
+    aspectRatio: 0.76,
+    borderRadius: 0,
+    overflow: "hidden",
+    backgroundColor: "#111",
+    borderWidth: 1,
+    borderColor: "#000",
+  },
+  postGridImage: {
     width: "100%",
-    height: 180,
-    borderRadius: 18,
+    height: "100%",
+    resizeMode: "cover",
+    backgroundColor: "#0f0f0f",
+  },
+  postOverlayImage: { position: "absolute", zIndex: 8 },
+  postGridVideoFallback: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#151515",
+  },
+  postLikesBadge: {
+    position: "absolute",
+    left: 6,
+    bottom: 6,
+    maxWidth: "88%",
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    backgroundColor: "rgba(0,0,0,0.62)",
+    zIndex: 12,
+  },
+  postLikesText: { color: "#fff", fontSize: 10, fontWeight: "900" },
+  fullPostRoot: { flex: 1, backgroundColor: "#000" },
+  fullPostStage: { ...StyleSheet.absoluteFillObject, backgroundColor: "#000" },
+  fullPostMedia: { width: "100%", height: "100%", resizeMode: "contain" },
+  fullPostVideoFallback: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#111",
+  },
+  fullPostOverlayImage: { position: "absolute", zIndex: 8 },
+  fullPostClose: {
+    position: "absolute",
+    top: 46,
+    left: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.45)",
+    zIndex: 20,
+  },
+  fullPostMenuButton: {
+    position: "absolute",
+    top: 46,
+    right: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.45)",
+    zIndex: 20,
+  },
+  fullPostMusicInside: {
+    position: "absolute",
+    top: 72,
+    left: 72,
+    right: 72,
+    alignItems: "center",
+    zIndex: 16,
+  },
+  fullPostMusicTitle: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  fullPostBottom: {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    bottom: 10,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 12,
+    zIndex: 16,
+  },
+  fullPostProfileRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  fullPostAvatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    overflow: "hidden",
+  },
+  fullPostTextBlock: { flex: 1 },
+  fullPostAuthor: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "900",
+    marginBottom: 4,
+  },
+  fullPostCaption: {
+    color: "#e5e5e5",
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "700",
+  },
+  fullPostSongCoverBox: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  fullPostSongCover: { width: "100%", height: "100%", resizeMode: "cover" },
+  createMusicButton: {
+    minHeight: 48,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fff",
+  },
+  createMusicText: { color: "#000", fontWeight: "900" },
+  merchSection: { paddingTop: 44 },
+  merchHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 18,
+  },
+  merchTitle: {
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "900",
+    marginBottom: 0,
+  },
+  merchLogo: {
+    width: 68,
+    height: 68,
+    borderRadius: 16,
+    backgroundColor: "#111",
+  },
+  productRail: { paddingBottom: 18 },
+  productCard: { width: 160, marginRight: 18 },
+  productImage: {
+    width: 160,
+    height: 210,
+    borderRadius: 16,
+    overflow: "hidden",
+  },
+  galleryRail: { paddingTop: 8 },
+  galleryCard: { width: 150, marginRight: 14 },
+  galleryImage: {
+    width: 150,
+    height: 200,
+    borderRadius: 16,
+    overflow: "hidden",
+  },
+  mediaFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#111",
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    justifyContent: "center",
+    paddingHorizontal: 20,
+  },
+  sideBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    justifyContent: "flex-start",
+    alignItems: "flex-start",
+  },
+  sidePanel: {
+    width: "82%",
+    maxWidth: 340,
+    minHeight: "100%",
+    paddingTop: 54,
+    paddingHorizontal: 18,
+    paddingBottom: 24,
+    backgroundColor: "#090909",
+    borderRightWidth: 1,
+    borderRightColor: "rgba(255,255,255,0.1)",
+  },
+  sideHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.08)",
     marginBottom: 12,
   },
-  boxImage: { width: "100%", height: "100%", resizeMode: "cover" },
+  sideAvatar: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    overflow: "hidden",
+    resizeMode: "cover",
+  },
+  sideName: { color: "#fff", fontSize: 17, fontWeight: "900" },
+  sideRow: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    marginBottom: 6,
+  },
+  sideText: { color: "#fff", fontSize: 15, fontWeight: "800" },
+  logoutGrid: {
+    marginTop: 42,
+    minHeight: 82,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: "rgba(218,52,52,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255,90,90,0.34)",
+  },
+  logoutGridText: { color: "#ff7474", fontSize: 15, fontWeight: "900" },
+  menuCard: {
+    width: "100%",
+    maxWidth: 360,
+    alignSelf: "center",
+    borderRadius: 22,
+    paddingVertical: 8,
+    backgroundColor: "#101010",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.09)",
+  },
+  menuRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 18,
+  },
+  menuText: { color: "#fff", fontSize: 18, fontWeight: "900" },
+  editorCard: {
+    width: "100%",
+    maxWidth: 460,
+    maxHeight: "86%",
+    alignSelf: "center",
+    borderRadius: 24,
+    padding: 18,
+    backgroundColor: "#0c0c0c",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  editorTitle: {
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "900",
+    marginBottom: 14,
+  },
+  editorSubtitle: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "900",
+    marginTop: 16,
+    marginBottom: 10,
+  },
+  input: {
+    minHeight: 48,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    color: "#fff",
+    backgroundColor: "#141414",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    marginBottom: 10,
+  },
+  textArea: { minHeight: 92, textAlignVertical: "top" },
+  primaryButton: {
+    minHeight: 46,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fff",
+    marginBottom: 10,
+  },
+  primaryButtonText: { color: "#000", fontWeight: "900" },
+  secondaryButton: {
+    minHeight: 46,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    marginBottom: 10,
+  },
+  secondaryButtonText: { color: "#fff", fontWeight: "800" },
+  dangerButton: {
+    minHeight: 46,
+    borderRadius: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "rgba(218,52,52,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,90,90,0.32)",
+    marginBottom: 10,
+  },
+  dangerButtonText: { color: "#ff8a8a", fontSize: 15, fontWeight: "900" },
+  deniedBox: {
+    borderRadius: 14,
+    padding: 12,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    marginBottom: 10,
+  },
+  deniedTitle: { color: "#fff", fontWeight: "900", marginBottom: 6 },
+  deniedText: { color: "#ccc", lineHeight: 20 },
+  simpleStatRow: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.08)",
+  },
+  simpleStatLabel: { color: "#ddd", fontWeight: "700" },
+  simpleStatValue: { color: "#fff", fontSize: 18, fontWeight: "900" },
+  popularLine: { color: "#ddd", fontSize: 14, lineHeight: 24 },
+  logoPicker: {
+    minHeight: 94,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    marginBottom: 10,
+  },
+  merchStudioCard: {
+    width: "100%",
+    maxWidth: 480,
+    maxHeight: "86%",
+    alignSelf: "center",
+    borderRadius: 28,
+    padding: 18,
+    backgroundColor: "#070707",
+    borderWidth: 1,
+    borderColor: "rgba(111,143,175,0.22)",
+  },
+  merchStudioHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 18,
+  },
+  merchBackButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  merchEyebrow: {
+    color: "#6F8FAF",
+    fontSize: 12,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
+  merchStudioTitle: { color: "#fff", fontSize: 30, fontWeight: "900" },
+  merchActionStack: { gap: 12 },
+  merchActionCard: {
+    minHeight: 86,
+    borderRadius: 20,
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 13,
+    backgroundColor: "rgba(255,255,255,0.055)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  merchActionIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(111,143,175,0.12)",
+  },
+  merchActionTitle: { color: "#fff", fontSize: 16, fontWeight: "900" },
+  merchActionText: { color: "#aaa", fontSize: 12, marginTop: 4 },
+  merchPanel: {
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.07)",
+  },
+  priceRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  priceInput: { flex: 1 },
+  currencyGrid: { flexDirection: "row", gap: 6 },
+  currencyButton: {
+    width: 42,
+    height: 48,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  currencyButtonActive: { backgroundColor: "#6F8FAF", borderColor: "#6F8FAF" },
+  currencyText: { color: "#fff", fontSize: 16, fontWeight: "900" },
+  currencyTextActive: { color: "#000" },
+  merchExistingBlock: { marginTop: 18 },
+  greenButton: {
+    minHeight: 52,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#6F8FAF",
+    marginBottom: 10,
+  },
+  greenButtonText: { color: "#000", fontSize: 15, fontWeight: "900" },
+  avatarStudioCard: {
+    width: "100%",
+    maxWidth: 420,
+    alignSelf: "center",
+    borderRadius: 28,
+    padding: 18,
+    backgroundColor: "#070707",
+    borderWidth: 1,
+    borderColor: "rgba(111,143,175,0.22)",
+  },
+  avatarPreviewFrame: {
+    width: 190,
+    height: 190,
+    borderRadius: 95,
+    alignSelf: "center",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.055)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+    marginBottom: 20,
+  },
+  avatarPreviewImage: { width: "100%", height: "100%", resizeMode: "cover" },
+  logoPreview: { width: 72, height: 72, borderRadius: 16 },
+  productPreview: {
+    width: "100%",
+    height: 220,
+    borderRadius: 16,
+    marginBottom: 10,
+  },
+  editorListRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 8,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.055)",
+    marginBottom: 8,
+  },
+  editorListTitle: { flex: 1 },
+  editorThumb: { width: 48, height: 48, borderRadius: 12 },
+  iconDangerButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(218,52,52,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,90,90,0.25)",
+  },
+  productModal: {
+    width: "100%",
+    maxWidth: 380,
+    alignSelf: "center",
+    borderRadius: 24,
+    padding: 16,
+    backgroundColor: "#0c0c0c",
+  },
+  productModalImage: {
+    width: "100%",
+    height: 320,
+    borderRadius: 18,
+    marginBottom: 14,
+  },
+  productModalTitle: { color: "#fff", fontSize: 20, fontWeight: "900" },
+  productModalMeta: { color: "#aaa", fontSize: 14, marginTop: 5 },
+  productDescription: {
+    color: "#ddd",
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 12,
+    marginBottom: 14,
+  },
 });

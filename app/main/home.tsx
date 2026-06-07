@@ -1,7 +1,10 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Image,
+  ImageBackground,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -9,528 +12,1083 @@ import {
   Text,
   View,
 } from "react-native";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
-import { buildReleaseRoute, findMusicMatch } from "../../constants/musicLibrary";
+import { usePlayer, type Track } from "../../context/PlayerContext";
+import { getHomeContent } from "../../firebase/contentClient";
+import { defaultUser } from "../../firebase/defaultContent";
+import { setReleaseReminder } from "../../firebase/releaseReminderClient";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useResponsive } from "../../utils/responsive";
-import FullscreenMedia from "./components/FullscreenMedia";
+import FullscreenPostMedia from "./components/FullscreenMedia";
 
 type FeaturedPost = {
   artist: string;
   avatar: string;
   caption: string;
-  id: number;
+  clipSource?: string;
+  id: string;
   image: string;
   musicName: string;
 };
 
-type DetailItem = {
-  id: number;
-  title: string;
-  subtitle: string;
+type MusicItem = {
+  artist: string;
+  id: string;
   image: string;
-  description: string;
+  meta: string;
+  title: string;
+  type: "album" | "track";
 };
 
-const FEATURED_POSTS: FeaturedPost[] = [
+type MerchItem = {
+  artist: string;
+  id: string;
+  image: string;
+  linkUrl: string;
+  price: string;
+  currency: string;
+  title: string;
+};
+
+type MerchBrand = {
+  artist: string;
+  id: string;
+  linkUrl: string;
+  logoUrl: string;
+  name: string;
+};
+
+type HomeBanner = {
+  buttonLabel: string;
+  image: string;
+  linkUrl: string;
+  subtitle: string;
+  targetId: string;
+  targetType: "album" | "post" | "shop" | "track";
+  title: string;
+};
+
+type DetailItem = {
+  description: string;
+  image: string;
+  subtitle: string;
+  title: string;
+};
+
+const EMPTY_COVERS = [
+  "#2f6f73",
+  "#8a3544",
+  "#6b5a2f",
+  "#365f91",
+  "#6e4f8b",
+  "#38724a",
+];
+
+const PLACEHOLDER_MUSIC: MusicItem[] = [
   {
-    id: 1,
-    artist: "Artist Name",
-    avatar:
-      "https://i.pinimg.com/1200x/b9/e8/db/b9e8db33168a26c9ca697a05ddc80937.jpg",
-    caption: "Nova bio visual para este drop. Mood noturno e cinematográfico.",
-    image:
-      "https://i.pinimg.com/736x/6b/87/62/6b8762d66ffc9220294524e16485b4e0.jpg",
-    musicName: "Noites de Neon",
+    artist: "Sonnor",
+    id: "placeholder-track-1",
+    image: "",
+    meta: "preview • 0 plays",
+    title: "Nova energia",
+    type: "track",
   },
   {
-    id: 2,
-    artist: "Artist Name",
-    avatar:
-      "https://i.pinimg.com/1200x/b9/e8/db/b9e8db33168a26c9ca697a05ddc80937.jpg",
-    caption: "Preview do conceito visual do próximo post com foco na estética.",
-    image:
-      "https://i.pinimg.com/1200x/f4/2f/59/f42f595b9b6b0b9cc8269e4a84364707.jpg",
-    musicName: "Velvet City",
+    artist: "Sonnor",
+    id: "placeholder-track-2",
+    image: "",
+    meta: "preview • 0 plays",
+    title: "Depois da meia-noite",
+    type: "track",
   },
   {
-    id: 3,
-    artist: "Artist Name",
-    avatar:
-      "https://i.pinimg.com/1200x/b9/e8/db/b9e8db33168a26c9ca697a05ddc80937.jpg",
-    caption: "Legenda curta com energia de lançamento e identidade do artista.",
-    image:
-      "https://i.pinimg.com/1200x/8d/dc/29/8ddc29e3bbdadf33fc22ca5ffa23d59d.jpg",
-    musicName: "Afterlight",
+    artist: "Sonnor",
+    id: "placeholder-track-3",
+    image: "",
+    meta: "preview • 0 plays",
+    title: "Studio take",
+    type: "track",
+  },
+  {
+    artist: "Sonnor",
+    id: "placeholder-track-4",
+    image: "",
+    meta: "preview • 0 plays",
+    title: "Em loop",
+    type: "track",
   },
 ];
 
-const CONTINUE_ITEMS: DetailItem[] = [
+const PLACEHOLDER_POSTS: FeaturedPost[] = [
   {
-    id: 1,
-    title: "Neon Dreams",
-    subtitle: "Artist Name",
-    image:
-      "https://i.pinimg.com/1200x/f5/8d/79/f58d797b9db7094bed77987ec32cc954.jpg",
-    description: "Projeto guardado na tua fila para continuares a ouvir.",
+    artist: "Sonnor",
+    avatar: "",
+    caption: "Quando houver posts publicados, eles entram aqui automaticamente.",
+    id: "placeholder-post-1",
+    image: "",
+    musicName: "Post em destaque",
   },
   {
-    id: 2,
-    title: "Midnight Avenue",
-    subtitle: "Artist Name",
-    image:
-      "https://i.pinimg.com/1200x/6b/87/62/6b8762d66ffc9220294524e16485b4e0.jpg",
-    description: "Álbum retomado a partir da última reprodução.",
+    artist: "Sonnor",
+    avatar: "",
+    caption: "Conteudo novo de quem segues e posts aleatorios para descoberta.",
+    id: "placeholder-post-2",
+    image: "",
+    musicName: "Descoberta",
   },
   {
-    id: 3,
-    title: "Blue Motel",
-    subtitle: "Artist Name",
-    image:
-      "https://i.pinimg.com/1200x/8f/2a/0b/8f2a0b7b1f8a4d7f1b3c2d9e0f1a2b3c.jpg",
-    description: "Single favorito ainda em destaque na tua biblioteca.",
+    artist: "Sonnor",
+    avatar: "",
+    caption: "Um espaco bonito para fotos, videos e clips ligados a musicas.",
+    id: "placeholder-post-3",
+    image: "",
+    musicName: "Clip social",
   },
   {
-    id: 4,
-    title: "After Hours Tape",
-    subtitle: "Artist Name",
-    image:
-      "https://i.pinimg.com/1200x/2f/6b/4c/2f6b4c0e5b92c4f1b85c9b7d1f3c1a0e.jpg",
-    description: "Projeto com visual escuro e produção mais pesada.",
-  },
-];
-
-const RELEASE_ITEMS: DetailItem[] = [
-  {
-    id: 1,
-    title: "Late Hours",
-    subtitle: "Artist Name",
-    image:
-      "https://i.pinimg.com/1200x/8f/2a/0b/8f2a0b7b1f8a4d7f1b3c2d9e0f1a2b3c.jpg",
-    description: "Single recém-lançado com visual principal já publicado.",
-  },
-  {
-    id: 2,
-    title: "Electric Sleep",
-    subtitle: "Artist Name",
-    image:
-      "https://i.pinimg.com/1200x/1a/6c/3d/1a6c3d7b8c9d0e1f2a3b4c5d6e7f8a9b.jpg",
-    description: "Novo drop pensado para playlists editoriais.",
-  },
-  {
-    id: 3,
-    title: "Slow Motion",
-    subtitle: "Artist Name",
-    image:
-      "https://i.pinimg.com/1200x/7c/1f/2d/7c1f2d8b8b4f5d91f0c7c0a9a2b6d7e1.jpg",
-    description: "Faixa com identidade visual inspirada em fotografia analógica.",
-  },
-  {
-    id: 4,
-    title: "Street Echo",
-    subtitle: "Artist Name",
-    image:
-      "https://i.pinimg.com/1200x/7a/5d/2d/7a5d2db7c7a21c7e0f7b41a2d9f0a1b2.jpg",
-    description: "Lançamento em crescimento nas últimas 24 horas.",
+    artist: "Sonnor",
+    avatar: "",
+    caption: "A grelha final mantem a home viva mesmo antes do Firebase estar cheio.",
+    id: "placeholder-post-4",
+    image: "",
+    musicName: "Feed",
   },
 ];
 
-const MODEL_ITEMS: DetailItem[] = [
-  {
-    id: 1,
-    title: "Night Run",
-    subtitle: "Name Shop",
-    image:
-      "https://www.iconsdb.com/icons/preview/white/nike-xxl.png",
-    description: "Peça visual ligada à coleção principal do artista.",
-  },
-  {
-    id: 2,
-    title: "Chrome Fit",
-    subtitle: "Name Shop",
-    image:
-      "https://www.iconsdb.com/icons/preview/white/nike-xxl.png",
-    description: "Look de campanha com styling mais minimal e forte.",
-  },
-  {
-    id: 3,
-    title: "Studio Uniform",
-    subtitle: "Name Shop",
-    image:
-      "https://www.iconsdb.com/icons/preview/white/nike-xxl.png",
-    description: "Seleção pensada para backstage e conteúdo curto.",
-  },
-  {
-    id: 4,
-    title: "Motion Pack",
-    subtitle: "Name Shop",
-    image:
-      "https://www.iconsdb.com/icons/preview/white/nike-xxl.png",
-    description: "Visual desenhado para editoriais e reels.",
-  },
-  {
-    id: 5,
-    title: "Tour Pack",
-    subtitle: "Name Shop",
-    image:
-      "https://www.iconsdb.com/icons/preview/white/nike-xxl.png",
-    description: "Coleção com leitura mais comercial e pronta para drop.",
-  },
-  {
-    id: 6,
-    title: "Runway Pack",
-    subtitle: "Name Shop",
-    image:
-      "https://www.iconsdb.com/icons/preview/white/nike-xxl.png",
-    description: "Peças escolhidas para destacar o lado editorial da marca.",
-  },
-];
+function hasImage(value: string | undefined | null) {
+  return typeof value === "string" && value.trim().length > 0;
+}
 
-const EXCLUSIVE_COLLECTIONS: DetailItem[] = [
-  {
-    id: 1,
-    title: "Collection 01",
-    subtitle: "Coleção exclusiva",
-    image:
-      "https://kitqueen.co.uk/cdn/shop/files/Navy_96e51aa8-74f2-41ad-af5a-37c60af73c54.png?v=1683196276&width=1500",
-    description: "Capsule com identidade noturna e acabamento premium.",
-  },
-  {
-    id: 2,
-    title: "Collection 02",
-    subtitle: "Coleção exclusiva",
-    image:
-      "https://kitqueen.co.uk/cdn/shop/files/Navy_96e51aa8-74f2-41ad-af5a-37c60af73c54.png?v=1683196276&width=1500",
-    description: "Linha pensada para o próximo calendário de lançamentos.",
-  },
-  {
-    id: 3,
-    title: "Collection 03",
-    subtitle: "Coleção exclusiva",
-    image:
-      "https://kitqueen.co.uk/cdn/shop/files/Navy_96e51aa8-74f2-41ad-af5a-37c60af73c54.png?v=1683196276&width=1500",
-    description: "Coleção visualmente limpa para ativações especiais.",
-  },
-];
+function getString(source: unknown, key: string, fallback = "") {
+  if (!source || typeof source !== "object" || !(key in source)) {
+    return fallback;
+  }
+
+  const value = (source as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function getNumber(source: unknown, key: string, fallback = 0) {
+  if (!source || typeof source !== "object" || !(key in source)) {
+    return fallback;
+  }
+
+  const value = (source as Record<string, unknown>)[key];
+  return typeof value === "number" ? value : fallback;
+}
+
+function shuffleItems<T>(items: T[]) {
+  return [...items].sort(() => Math.random() - 0.5);
+}
+
+function uniqueBy<T>(items: T[], getKey: (item: T) => string) {
+  const seen = new Set<string>();
+
+  return items.filter((item) => {
+    const key = getKey(item);
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function getMusicKey(item: MusicItem) {
+  return `${item.type}-${item.id}`;
+}
+
+function getDateMillis(value: unknown) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "string" || typeof value === "number") {
+    const millis = new Date(value).getTime();
+    return Number.isNaN(millis) ? 0 : millis;
+  }
+  if (value && typeof value === "object" && "toMillis" in value) {
+    const toMillis = (value as { toMillis?: unknown }).toMillis;
+    return typeof toMillis === "function" ? toMillis.call(value) : 0;
+  }
+  return 0;
+}
+
+function getCountdownLabel(target: unknown, now: number) {
+  const remainingSeconds = Math.max(0, Math.floor((getDateMillis(target) - now) / 1000));
+  const hours = Math.floor(remainingSeconds / 3600);
+  const minutes = Math.floor((remainingSeconds % 3600) / 60);
+  const seconds = remainingSeconds % 60;
+
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+}
+
+function getCountdownParts(target: unknown, now: number) {
+  return getCountdownLabel(target, now).split(":");
+}
+
+function MediaBox({
+  children,
+  fallbackIndex = 0,
+  imageStyle,
+  resizeMode = "cover",
+  style,
+  uri,
+}: {
+  children?: React.ReactNode;
+  fallbackIndex?: number;
+  imageStyle?: object;
+  resizeMode?: "contain" | "cover";
+  style: object;
+  uri: string;
+}) {
+  if (hasImage(uri)) {
+    return (
+      <ImageBackground
+        resizeMode={resizeMode}
+        source={{ uri }}
+        style={style}
+        imageStyle={[styles.mediaImage, imageStyle]}
+      >
+        {children}
+      </ImageBackground>
+    );
+  }
+
+  return (
+    <View
+      style={[
+        style,
+        styles.mediaFallback,
+        { backgroundColor: EMPTY_COVERS[fallbackIndex % EMPTY_COVERS.length] },
+      ]}
+    >
+      <Ionicons name="musical-notes" size={28} color="rgba(255,255,255,0.92)" />
+      {children}
+    </View>
+  );
+}
+
+function SectionHeader({
+  action,
+  onPress,
+  title,
+}: {
+  action?: string;
+  onPress?: () => void;
+  title: string;
+}) {
+  return (
+    <View style={styles.sectionHeader}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {action ? (
+        <Pressable onPress={onPress} style={styles.headerAction}>
+          <Text style={styles.headerActionText}>{action}</Text>
+          <Ionicons name="chevron-forward" size={16} color="#d9efe9" />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { wp, hp, font } = useResponsive();
+  const { playQueue, playTrack } = usePlayer();
+  const { user } = useCurrentUser();
+  const { hp, wp } = useResponsive();
   const [showFull, setShowFull] = useState(false);
   const [fullType, setFullType] = useState<"image" | "video" | null>(null);
   const [fullSource, setFullSource] = useState<string | null>(null);
   const [fullPost, setFullPost] = useState<FeaturedPost | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<DetailItem | null>(null);
+  const [homeData, setHomeData] = useState<Awaited<ReturnType<typeof getHomeContent>> | null>(null);
+  const [releaseReminders, setReleaseReminders] = useState(() => new Set<string>());
+  const [now, setNow] = useState(Date.now());
 
-  const heroCard = useMemo(
-    () => ({
-      id: 0,
-      title: "Visual em destaque",
-      subtitle: "Campanha principal",
-      image:
-        "https://i.pinimg.com/736x/c5/25/2a/c5252a97ccdddc0b4e7974850f2df6f8.jpg",
-      description:
-        "Banner principal ligado à campanha visual mais recente do artista.",
-    }),
-    [],
+  useEffect(() => {
+    let active = true;
+
+    getHomeContent(user?.uid).then((content) => {
+      if (active) {
+        setHomeData(content);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [user?.uid]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const userById = useMemo(() => {
+    const map = new Map<string, Record<string, unknown>>();
+
+    homeData?.users.forEach((profile) => {
+      map.set(profile.uid || profile.id, profile);
+    });
+
+    return map;
+  }, [homeData?.users]);
+
+  const followedIds = useMemo(
+    () => new Set(homeData?.follows.map((follow) => follow.followingId) ?? []),
+    [homeData?.follows],
   );
 
-  function openFullscreen(post: FeaturedPost) {
-    setFullPost(post);
-    setFullType("image");
-    setFullSource(post.image);
-    setShowFull(true);
-  }
+  const tracks = useMemo(() => homeData?.tracks ?? [], [homeData?.tracks]);
+  const albums = useMemo(() => homeData?.albums ?? [], [homeData?.albums]);
+  const posts = useMemo(() => homeData?.posts ?? [], [homeData?.posts]);
+  const users = useMemo(() => homeData?.users ?? [], [homeData?.users]);
+  const preferredGenres = useMemo(() => {
+    const currentProfile = users.find(
+      (profile) => (profile.uid || profile.id) === user?.uid,
+    );
+    return new Set(
+      Array.isArray(currentProfile?.interests)
+        ? currentProfile.interests.map((genre) => genre.toLowerCase())
+        : [],
+    );
+  }, [user?.uid, users]);
+  const publicConfig = homeData?.publicConfig as Record<string, unknown> | null;
+  const bannerConfig =
+    publicConfig && typeof publicConfig.homeBanner === "object"
+      ? (publicConfig.homeBanner as Record<string, unknown>)
+      : publicConfig;
 
-  function openReleaseFromItem(item: DetailItem) {
-    const match = findMusicMatch(item.title);
+  const banner: HomeBanner = {
+    title: getString(bannerConfig, "title", "Sonnor Radio"),
+    subtitle: getString(
+      bannerConfig,
+      "subtitle",
+      "Um destaque novo, pronto para trocares no Firebase quando quiseres.",
+    ),
+    image:
+      getString(bannerConfig, "imageUrl") ||
+      getString(bannerConfig, "image") ||
+      defaultUser.bannerUrl,
+    buttonLabel: getString(bannerConfig, "buttonLabel", "Abrir destaque"),
+    targetType:
+      (getString(bannerConfig, "targetType", "shop") as HomeBanner["targetType"]) ||
+      "shop",
+    targetId: getString(bannerConfig, "targetId"),
+    linkUrl: getString(bannerConfig, "linkUrl") || getString(bannerConfig, "url"),
+  };
 
-    if (!match) {
-      setSelectedDetail(item);
+  const allMusic = useMemo<MusicItem[]>(() => {
+    const trackItems = tracks.map((track) => {
+      const profile = userById.get(getString(track, "userId"));
+      const artist = getString(profile, "displayName", defaultUser.displayName);
+
+      return {
+        artist,
+        id: track.id,
+        image: getString(track, "coverUrl"),
+        meta: `${getString(track, "genre", "Musica")} • ${track.playsCount ?? 0} plays`,
+        title: getString(track, "title", "Musica"),
+        type: "track" as const,
+      };
+    });
+    const albumItems = albums.map((album) => {
+      const profile = userById.get(getString(album, "userId"));
+      const artist = getString(profile, "displayName", defaultUser.displayName);
+
+      return {
+        artist,
+        id: album.id,
+        image: getString(album, "coverUrl"),
+        meta: `${getString(album, "type", "album")} • ${getNumber(album, "playsCount")} plays`,
+        title: getString(album, "title", "Lancamento"),
+        type: "album" as const,
+      };
+    });
+
+    const items = [...trackItems, ...albumItems];
+
+    return items.length > 0 ? uniqueBy(items, getMusicKey) : PLACEHOLDER_MUSIC;
+  }, [albums, tracks, userById]);
+
+  const continueItems = useMemo(() => {
+    const recentTrackIds = homeData?.recentPlays
+      .map((play) => getString(play, "trackId"))
+      .filter(Boolean);
+    const recent = recentTrackIds
+      ?.map((trackId) => allMusic.find((item) => item.id === trackId && item.type === "track"))
+      .filter((item): item is MusicItem => Boolean(item));
+
+    return recent && recent.length > 0
+      ? uniqueBy(recent, getMusicKey).slice(0, 5)
+      : shuffleItems(allMusic).slice(0, 5);
+  }, [allMusic, homeData?.recentPlays]);
+
+  const recommendedItems = useMemo(
+    () =>
+      shuffleItems(
+        uniqueBy(
+          [...allMusic].sort((left, right) => right.meta.localeCompare(left.meta)),
+          getMusicKey,
+        ),
+      ).filter((item) => item.type === "track").slice(0, 5),
+    [allMusic],
+  );
+
+  const tasteItems = useMemo(() => {
+    if (preferredGenres.size === 0) return [];
+
+    return shuffleItems(
+      tracks
+        .filter((track) => preferredGenres.has(getString(track, "genre").toLowerCase()))
+        .map((track) => {
+          const profile = userById.get(getString(track, "userId"));
+          return {
+            artist: getString(profile, "displayName", defaultUser.displayName),
+            id: track.id,
+            image: getString(track, "coverUrl"),
+            meta: getString(track, "genre", "Musica"),
+            title: getString(track, "title", "Musica"),
+            type: "track" as const,
+          };
+        }),
+    ).slice(0, 10);
+  }, [preferredGenres, tracks, userById]);
+
+  const randomTrackItems = useMemo(() => {
+    const items = tracks.map((track) => {
+      const profile = userById.get(getString(track, "userId"));
+      const artist = getString(profile, "displayName", defaultUser.displayName);
+
+      return {
+        artist,
+        id: track.id,
+        image: getString(track, "coverUrl"),
+        meta: getString(track, "genre", "Musica"),
+        title: getString(track, "title", "Musica"),
+        type: "track" as const,
+      };
+    });
+
+    return shuffleItems(uniqueBy(items, getMusicKey)).slice(0, 10);
+  }, [tracks, userById]);
+
+  const upcomingRelease = useMemo(() => {
+    const releases = homeData?.upcomingReleases ?? [];
+    return releases.length > 0
+      ? releases[Math.floor(Math.random() * releases.length)]
+      : undefined;
+  }, [homeData?.upcomingReleases]);
+  const upcomingReleaseArtist = upcomingRelease
+    ? getString(
+        userById.get(getString(upcomingRelease, "userId")),
+        "displayName",
+        defaultUser.displayName,
+      )
+    : "";
+  const upcomingReleaseCountdownTarget =
+    getString(upcomingRelease, "status") === "published"
+      ? upcomingRelease?.preReleaseHighlightUntil
+      : upcomingRelease?.releaseDate;
+  const upcomingReleaseCountdownAt = getDateMillis(upcomingReleaseCountdownTarget);
+  const upcomingReleaseId = upcomingRelease?.id;
+
+  useEffect(() => {
+    if (!upcomingReleaseId || upcomingReleaseCountdownAt > Date.now()) {
       return;
     }
 
-    router.push(
-      buildReleaseRoute(match, {
+    const refresh = () => {
+      getHomeContent(user?.uid).then(setHomeData).catch(() => null);
+    };
+    refresh();
+    const timer = setInterval(refresh, 10000);
+    return () => clearInterval(timer);
+  }, [upcomingReleaseCountdownAt, upcomingReleaseId, user?.uid]);
+
+  const followedMusic = useMemo(() => {
+    const items = allMusic.filter((item) => {
+      const source =
+        tracks.find((track) => track.id === item.id) ??
+        albums.find((album) => album.id === item.id);
+
+      return item.type === "album" && source ? followedIds.has(getString(source, "userId")) : false;
+    });
+
+    const fallback = allMusic.filter((item) => item.type === "album");
+    return shuffleItems(items.length > 0 ? uniqueBy(items, getMusicKey) : fallback).slice(0, 5);
+  }, [albums, allMusic, followedIds, tracks]);
+
+  const featuredPosts = useMemo<FeaturedPost[]>(() => {
+    const firstTrackWithClip = tracks.find((track) => hasImage(getString(track, "shortVideoUrl")));
+
+    const items = posts.map((post) => {
+      const postUserId = getString(post, "userId");
+      const profile = userById.get(postUserId);
+      const linkedTrackId = getString(post, "linkedTrackId");
+      const linkedTrack = tracks.find((track) => track.id === linkedTrackId);
+      const userTrackWithClip = tracks.find(
+        (track) =>
+          getString(track, "userId") === postUserId &&
+          hasImage(getString(track, "shortVideoUrl")),
+      );
+      const userTrack = tracks.find((track) => getString(track, "userId") === postUserId);
+      const displayTrack = linkedTrack ?? userTrackWithClip ?? userTrack ?? firstTrackWithClip;
+
+      return {
+        artist: getString(profile, "displayName", getString(post, "artist", "Perfil")),
+        avatar: getString(profile, "avatarUrl", defaultUser.avatarUrl),
+        caption: getString(post, "caption", "Novo conteudo disponivel na Sonnor."),
+        clipSource:
+          getString(post, "linkedTrackShortVideoUrl") ||
+          getString(linkedTrack, "shortVideoUrl") ||
+          getString(userTrackWithClip, "shortVideoUrl") ||
+          getString(firstTrackWithClip, "shortVideoUrl"),
+        id: post.id,
+        image: getString(post, "mediaUrl") || getString(post, "thumbnailUrl"),
+        musicName: getString(displayTrack, "title") || getString(post, "title"),
+      };
+    });
+
+    return items.length > 0 ? uniqueBy(items, (post) => post.id) : PLACEHOLDER_POSTS;
+  }, [posts, tracks, userById]);
+
+  const merchItems = useMemo<MerchItem[]>(() => {
+    return shuffleItems(uniqueBy(users.filter((profile) => (profile.uid || profile.id) !== user?.uid).flatMap((profile) => {
+      const products = Array.isArray(profile.merchProducts) ? profile.merchProducts : [];
+      const artist = getString(profile, "displayName", "Artista");
+      const shopUrl = getString(profile, "shopUrl");
+
+      return products.map((product) => ({
+        artist,
+        id: `${profile.id}-${product.id}`,
+        image: product.imageUrl,
+        linkUrl: product.linkUrl || shopUrl,
+        price: product.price ?? "",
+        currency: "currency" in product && typeof product.currency === "string" ? product.currency : "",
+        title: product.title,
+      }));
+    }), (item) => item.id)).slice(0, 10);
+  }, [user?.uid, users]);
+
+  const merchBrands = useMemo<MerchBrand[]>(() => {
+    const items = users
+      .filter((profile) => (profile.uid || profile.id) !== user?.uid)
+      .filter((profile) => {
+        const products = Array.isArray(profile.merchProducts) ? profile.merchProducts : [];
+
+        return Boolean(
+          getString(profile, "merchLogoUrl") ||
+            getString(profile, "shopUrl") ||
+            products.length > 0,
+        );
+      })
+      .map((profile) => ({
+        artist: getString(profile, "displayName", "Artista"),
+        id: profile.uid || profile.id,
+        linkUrl: getString(profile, "shopUrl"),
+        logoUrl: getString(profile, "merchLogoUrl"),
+        name:
+          getString(profile, "merchName") ||
+          `${getString(profile, "displayName", "Artista")} merch`,
+      }));
+
+    return shuffleItems(uniqueBy(items, (brand) => brand.id)).slice(0, 10);
+  }, [user?.uid, users]);
+
+  function openMusic(item: MusicItem) {
+    if (item.id.startsWith("placeholder")) {
+      setSelectedDetail({
+        description: "Assim que publicares musicas no Firebase, este bloco abre a musica real.",
+        image: item.image,
+        subtitle: item.artist,
+        title: item.title,
+      });
+      return;
+    }
+
+    if (item.type === "track") {
+      const albumId = getString(tracks.find((track) => track.id === item.id), "albumId");
+
+      if (albumId) {
+        router.push({
+          pathname: "/main/release/[slug]",
+          params: { slug: albumId, albumId },
+        });
+        return;
+      }
+
+      router.push({ pathname: "/main/track/[id]", params: { id: item.id } });
+      return;
+    }
+
+    router.push({
+      pathname: "/main/release/[slug]",
+      params: {
+        slug: item.id,
+        albumId: item.id,
+        artist: item.artist,
         cover: item.image,
-        heroImage: item.image,
-      }),
-    );
+        title: item.title,
+      },
+    });
   }
 
-  const CARD_WIDTH = wp(46);
-  const SQUARE_SIZE = wp(42);
-  const FASHION_WIDTH = wp(50);
+  async function toggleReleaseReminder(albumId: string) {
+    if (!user?.uid) {
+      router.push("/auth/login");
+      return;
+    }
+
+    const enabled = !releaseReminders.has(albumId);
+    setReleaseReminders((current) => {
+      const next = new Set(current);
+      if (enabled) next.add(albumId);
+      else next.delete(albumId);
+      return next;
+    });
+
+    try {
+      await setReleaseReminder(user.uid, albumId, enabled);
+    } catch {
+      setReleaseReminders((current) => {
+        const next = new Set(current);
+        if (enabled) next.delete(albumId);
+        else next.add(albumId);
+        return next;
+      });
+    }
+  }
+
+  async function playMusic(item: MusicItem) {
+    if (item.type === "album") {
+      const album = albums.find((entry) => entry.id === item.id);
+      const albumTrackIds =
+        album && "trackIds" in album && Array.isArray(album.trackIds)
+          ? album.trackIds
+          : [];
+      const albumTracks = tracks
+        .filter(
+          (entry) =>
+            getString(entry, "albumId") === item.id || albumTrackIds.includes(entry.id),
+        )
+        .sort((left, right) => {
+          const leftIndex = albumTrackIds.indexOf(left.id);
+          const rightIndex = albumTrackIds.indexOf(right.id);
+
+          return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) -
+            (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
+        });
+      const queue: Track[] = albumTracks
+        .map((entry) => ({
+          id: entry.id,
+          uri: getString(entry, "audioUrl"),
+          title: getString(entry, "title", "Musica"),
+          artist: item.artist,
+          cover: getString(entry, "coverUrl") || item.image,
+          genre: getString(entry, "genre"),
+          shortVideo: getString(entry, "shortVideoUrl"),
+          lyrics: getString(entry, "lyrics"),
+          albumId: item.id,
+          source: "home" as const,
+        }))
+        .filter((entry) => entry.uri);
+
+      await playQueue(queue);
+      return;
+    }
+
+    const source = tracks.find((entry) => entry.id === item.id);
+    const uri = getString(source, "audioUrl");
+
+    if (source && uri) {
+      await playTrack({
+        id: source.id,
+        uri,
+        title: item.title,
+        artist: item.artist,
+        cover: item.image,
+        genre: getString(source, "genre"),
+        shortVideo: getString(source, "shortVideoUrl"),
+        lyrics: getString(source, "lyrics"),
+        albumId: getString(source, "albumId"),
+        source: "home",
+      });
+    }
+  }
+
+  function openPost(post: FeaturedPost) {
+    if (!hasImage(post.image) && !hasImage(post.clipSource)) {
+      setSelectedDetail({
+        description: post.caption,
+        image: post.image,
+        subtitle: post.musicName,
+        title: post.artist,
+      });
+      return;
+    }
+
+    setFullPost(post);
+    setFullType(post.clipSource ? "video" : "image");
+    setFullSource(post.clipSource || post.image);
+    setShowFull(true);
+  }
+
+  function openBanner() {
+    if (banner.targetType === "shop" && banner.linkUrl) {
+      Linking.openURL(banner.linkUrl).catch(() => null);
+      return;
+    }
+
+    if (banner.targetType === "track" && banner.targetId) {
+      router.push({ pathname: "/main/track/[id]", params: { id: banner.targetId } });
+      return;
+    }
+
+    if (banner.targetType === "post" && banner.targetId) {
+      router.push({ pathname: "/main/post/[id]", params: { id: banner.targetId } });
+      return;
+    }
+
+    if (banner.targetType === "album" && banner.targetId) {
+      const album = allMusic.find(
+        (item) => item.type === "album" && item.id === banner.targetId,
+      );
+
+      if (album) {
+        openMusic(album);
+        return;
+      }
+    }
+
+    if (banner.linkUrl) {
+      Linking.openURL(banner.linkUrl).catch(() => null);
+    }
+  }
+
+  const cardWidth = wp(42);
+  const wideCardWidth = wp(52);
 
   return (
     <View style={styles.container}>
       <Modal transparent visible={selectedDetail !== null} animationType="fade">
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setSelectedDetail(null)}
-        >
-          <Pressable
-            style={styles.detailCard}
-            onPress={(event) => event.stopPropagation()}
-          >
-            {selectedDetail && (
+        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedDetail(null)}>
+          <Pressable style={styles.detailCard} onPress={(event) => event.stopPropagation()}>
+            {selectedDetail ? (
               <>
-                <Image
-                  source={{ uri: selectedDetail.image }}
-                  style={styles.detailImage}
-                />
+                <MediaBox uri={selectedDetail.image} style={styles.detailImage} />
                 <Text style={styles.detailTitle}>{selectedDetail.title}</Text>
-                <Text style={styles.detailSubtitle}>
-                  {selectedDetail.subtitle}
-                </Text>
-                <Text style={styles.detailDescription}>
-                  {selectedDetail.description}
-                </Text>
+                <Text style={styles.detailSubtitle}>{selectedDetail.subtitle}</Text>
+                <Text style={styles.detailDescription}>{selectedDetail.description}</Text>
               </>
-            )}
+            ) : null}
           </Pressable>
         </Pressable>
       </Modal>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 230 }}
+        contentContainerStyle={{ paddingBottom: 230, paddingTop: hp(7) }}
       >
-        <Text
-          style={[
-            styles.pageTitle,
-            {
-              fontSize: font(32),
-              marginTop: hp(8),
-              paddingLeft: wp(5),
-              marginBottom: hp(2),
-            },
-          ]}
-        >
-          Início
-        </Text>
-
-        <View style={[styles.section, { marginBottom: hp(4) }]}>
-          <Pressable onPress={() => setSelectedDetail(heroCard)}>
-            <Image
-              source={{ uri: heroCard.image }}
-              style={[styles.bigBanner, { height: hp(24) }]}
-            />
+        <View style={styles.titleRow}>
+          <View>
+            <Text style={styles.kicker}>Boa escuta</Text>
+            <Text style={styles.pageTitle}>Inicio</Text>
+          </View>
+          <Pressable style={styles.searchButton} onPress={() => router.push("/main/search")}>
+            <Ionicons name="search" size={20} color="#fff" />
           </Pressable>
         </View>
 
-        <View style={styles.section}>
-          <Text
-            style={[
-              styles.sectionTitle,
-              { fontSize: font(22), paddingLeft: wp(5), marginBottom: hp(2) },
-            ]}
+        <Pressable style={styles.heroWrap} onPress={openBanner}>
+          <MediaBox
+            imageStyle={styles.heroImage}
+            uri={banner.image}
+            style={[styles.heroBanner, { height: hp(29) }]}
           >
-            Para Ti
-          </Text>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingLeft: wp(5), paddingRight: wp(5) }}
-          >
-            <View style={{ flexDirection: "row", gap: wp(4) }}>
-              {FEATURED_POSTS.map((post) => (
-                <Pressable key={post.id} onPress={() => openFullscreen(post)}>
-                  <Image
-                    style={[
-                      styles.musicBox,
-                      { width: CARD_WIDTH, height: hp(30) },
-                    ]}
-                    source={{ uri: post.image }}
-                  />
-                </Pressable>
-              ))}
+            <View style={styles.heroShade} />
+            <View style={styles.heroContent}>
+              <View>
+                <Text style={styles.heroEyebrow}>Destaque Firebase</Text>
+                <Text style={styles.heroTitle} numberOfLines={2}>
+                  {banner.title}
+                </Text>
+                <Text style={styles.heroSubtitle} numberOfLines={2}>
+                  {banner.subtitle}
+                </Text>
+              </View>
+              <View style={styles.heroButton}>
+                <Ionicons name="play" size={16} color="#06110d" />
+                <Text style={styles.heroButtonText}>{banner.buttonLabel}</Text>
+              </View>
             </View>
-          </ScrollView>
-        </View>
+          </MediaBox>
+        </Pressable>
 
-        <View style={[styles.section, { marginTop: hp(6) }]}>
-          <Text
-            style={[
-              styles.sectionTitle,
-              { fontSize: font(22), paddingLeft: wp(5), marginBottom: hp(2) },
-            ]}
-          >
-            Continuar
-          </Text>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingLeft: wp(5), paddingRight: wp(5) }}
-          >
-            <View style={{ flexDirection: "row", gap: wp(4) }}>
-              {CONTINUE_ITEMS.map((item) => (
-                <Pressable
-                  key={item.id}
-                  style={{ width: SQUARE_SIZE }}
-                  onPress={() => openReleaseFromItem(item)}
-                >
-                  <Image
-                    style={[
-                      styles.squareBox,
-                      { width: SQUARE_SIZE, height: SQUARE_SIZE },
-                    ]}
-                    source={{ uri: item.image }}
-                  />
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      styles.itemTitle,
-                      { fontSize: font(17), marginTop: hp(1.2) },
-                    ]}
-                  >
-                    {item.title}
-                  </Text>
-                  <Text
-                    numberOfLines={1}
-                    style={[styles.itemArtist, { fontSize: font(14) }]}
-                  >
-                    {item.subtitle}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </ScrollView>
-        </View>
-
-        <View style={[styles.section, { marginTop: hp(6) }]}>
-          <Text
-            style={[
-              styles.sectionTitle,
-              { fontSize: font(22), paddingLeft: wp(5), marginBottom: hp(2) },
-            ]}
-          >
-            Lançamentos
-          </Text>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingLeft: wp(5), paddingRight: wp(5) }}
-          >
-            <View style={{ flexDirection: "row", gap: wp(4) }}>
-              {RELEASE_ITEMS.map((item) => (
-                <Pressable
-                  key={item.id}
-                  style={{ width: SQUARE_SIZE }}
-                  onPress={() => openReleaseFromItem(item)}
-                >
-                  <Image
-                    style={[
-                      styles.squareBox,
-                      { width: SQUARE_SIZE, height: SQUARE_SIZE },
-                    ]}
-                    source={{ uri: item.image }}
-                  />
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      styles.itemTitle,
-                      { fontSize: font(17), marginTop: hp(1.2) },
-                    ]}
-                  >
-                    {item.title}
-                  </Text>
-                  <Text
-                    numberOfLines={1}
-                    style={[styles.itemArtist, { fontSize: font(14) }]}
-                  >
-                    {item.subtitle}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </ScrollView>
-        </View>
-
-        <View style={[styles.section, { marginTop: hp(8) }]}>
-          <Text
-            style={[
-              styles.sectionTitle,
-              { fontSize: font(22), paddingLeft: wp(5), marginBottom: hp(2.5) },
-            ]}
-          >
-            Model
-          </Text>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingLeft: wp(5), paddingRight: wp(5) }}
-          >
-            <View style={{ flexDirection: "row", gap: wp(6) }}>
-              {MODEL_ITEMS.map((item) => (
-                <Pressable
-                  key={item.id}
-                  style={{ width: FASHION_WIDTH }}
-                  onPress={() => setSelectedDetail(item)}
-                >
-                  <Image
-                    source={{ uri: item.image }}
-                    style={[
-                      styles.fashionBoxTransparent,
-                      { width: FASHION_WIDTH, height: hp(28) },
-                    ]}
-                  />
-                  <Text
-                    style={[
-                      styles.fashionLabel,
-                      { fontSize: font(16), marginTop: hp(1.5) },
-                    ]}
-                  >
-                    {item.title}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </ScrollView>
-        </View>
-
-        <View style={[styles.section, { marginTop: hp(8) }]}>
-          <Text
-            style={[
-              styles.sectionTitle,
-              { fontSize: font(22), paddingLeft: wp(5), marginBottom: hp(2.5) },
-            ]}
-          >
-            Coleções Exclusivas
-          </Text>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingLeft: wp(5), paddingRight: wp(5) }}
-          >
-            <View style={{ flexDirection: "row", gap: wp(8) }}>
-              {EXCLUSIVE_COLLECTIONS.map((item) => (
-                <Pressable
-                  key={item.id}
-                  onPress={() => setSelectedDetail(item)}
-                >
-                  <Image
-                    source={{ uri: item.image }}
-                    resizeMode="contain"
-                    style={{
-                      width: wp(55),
-                      height: wp(55),
-                      backgroundColor: "transparent",
+        {upcomingRelease ? (
+          <View style={styles.preReleaseSection}>
+            <SectionHeader title="Pré-lançamento" />
+            <Pressable
+              onPress={() =>
+                router.push({
+                  pathname: "/main/release/[slug]",
+                  params: { slug: upcomingRelease.id, albumId: upcomingRelease.id },
+                })
+              }
+              style={styles.preReleaseCard}
+            >
+              {getString(upcomingRelease, "coverUrl") ? (
+                <Image
+                  blurRadius={20}
+                  source={{ uri: getString(upcomingRelease, "coverUrl") }}
+                  style={styles.preReleaseColorSample}
+                />
+              ) : null}
+              <Svg height={132} pointerEvents="none" style={styles.preReleaseFade} width={wp(100)}>
+                <Defs>
+                  <LinearGradient id="homePreReleaseFade" x1="0" x2="1" y1="0" y2="0">
+                    <Stop offset="0" stopColor="#000" stopOpacity="0.08" />
+                    <Stop offset="0.38" stopColor="#000" stopOpacity="0.52" />
+                    <Stop offset="0.64" stopColor="#000" stopOpacity="0.94" />
+                    <Stop offset="0.8" stopColor="#000" />
+                    <Stop offset="1" stopColor="#000" stopOpacity="1" />
+                  </LinearGradient>
+                </Defs>
+                <Rect fill="url(#homePreReleaseFade)" height="100%" width="100%" />
+              </Svg>
+              <MediaBox
+                uri={getString(upcomingRelease, "coverUrl")}
+                style={styles.preReleaseCover}
+              />
+              <View style={styles.preReleaseInfo}>
+                <Text numberOfLines={1} style={styles.preReleaseTitle}>
+                  {getString(upcomingRelease, "title", "Novo lançamento")}
+                </Text>
+                <Text numberOfLines={1} style={styles.preReleaseMeta}>
+                  {upcomingReleaseArtist} • {getString(upcomingRelease, "type", "lançamento")} •{" "}
+                  {Array.isArray(upcomingRelease.trackIds) ? upcomingRelease.trackIds.length : 0} faixas
+                </Text>
+                <View style={styles.preReleaseActions}>
+                  <View style={styles.preReleaseTime}>
+                    {getCountdownParts(upcomingReleaseCountdownTarget, now).map((part, index) => (
+                      <React.Fragment key={index}>
+                        {index > 0 ? <Text style={styles.preReleaseTimeSeparator}>:</Text> : null}
+                        <View style={styles.preReleaseTimeBox}>
+                          <Text style={styles.preReleaseTimeBoxLabel}>
+                            {["Hora", "Min", "Seg"][index]}
+                          </Text>
+                          <Text style={styles.preReleaseTimeText}>{part}</Text>
+                        </View>
+                      </React.Fragment>
+                    ))}
+                  </View>
+                  <Pressable
+                    onPress={(event) => {
+                      event.stopPropagation();
+                      void toggleReleaseReminder(upcomingRelease.id);
                     }}
-                  />
+                    style={({ pressed }) => [
+                      styles.preReleaseBell,
+                      pressed ? styles.playButtonPressed : null,
+                    ]}
+                  >
+                    <Ionicons
+                      name={releaseReminders.has(upcomingRelease.id) ? "notifications" : "notifications-outline"}
+                      size={19}
+                      color="#050505"
+                    />
+                  </Pressable>
+                </View>
+              </View>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <MusicRail
+          items={continueItems}
+          onPress={openMusic}
+          onPlay={playMusic}
+          title="Continuar a escutar"
+          width={wideCardWidth}
+        />
+
+        <MusicRail
+          items={recommendedItems}
+          onPress={openMusic}
+          onPlay={playMusic}
+          title="Recomendados"
+          width={cardWidth}
+        />
+
+        {tasteItems.length > 0 ? (
+          <MusicRail
+            items={tasteItems}
+            onPress={openMusic}
+            onPlay={playMusic}
+            title="Para o teu gosto"
+            width={cardWidth}
+          />
+        ) : null}
+
+        {randomTrackItems.length > 0 ? (
+          <MusicRail
+            items={randomTrackItems}
+            onPress={openMusic}
+            onPlay={playMusic}
+            title="Músicas que talvez gostes"
+            width={cardWidth}
+          />
+        ) : null}
+
+        <MusicRail
+          items={followedMusic}
+          onPress={openMusic}
+          onPlay={playMusic}
+          title="De quem segues"
+          width={cardWidth}
+        />
+
+        {merchBrands.length > 0 || merchItems.length > 0 ? (
+        <View style={styles.section}>
+          <SectionHeader title="Merch dos artistas" />
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.horizontalContent}
+          >
+            <View style={styles.merchLogoRow}>
+              {merchBrands.map((brand, index) => (
+                <Pressable
+                  key={brand.id}
+                  style={styles.merchLogoCard}
+                  onPress={() =>
+                    brand.linkUrl
+                      ? Linking.openURL(brand.linkUrl).catch(() => null)
+                      : setSelectedDetail({
+                          description:
+                            "Adiciona merchLogoUrl e shopUrl no perfil do artista para este logo abrir a loja.",
+                          image: brand.logoUrl,
+                          subtitle: brand.artist,
+                          title: brand.name,
+                        })
+                  }
+                >
+                  {hasImage(brand.logoUrl) ? (
+                    <Image
+                      resizeMode="contain"
+                      source={{ uri: brand.logoUrl }}
+                      style={styles.merchLogoImage}
+                    />
+                  ) : (
+                    <View
+                      style={[
+                        styles.merchLogoFallback,
+                        { backgroundColor: EMPTY_COVERS[index % EMPTY_COVERS.length] },
+                      ]}
+                    >
+                      <Text numberOfLines={1} style={styles.merchLogoInitial}>
+                        {brand.artist.slice(0, 1)}
+                      </Text>
+                    </View>
+                  )}
+                  <Text numberOfLines={1} style={styles.merchLogoName}>
+                    {brand.name}
+                  </Text>
                 </Pressable>
               ))}
             </View>
           </ScrollView>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.merchProductsContent}
+          >
+            <View style={styles.railRow}>
+              {merchItems.map((item, index) => (
+                <Pressable
+                  key={item.id}
+                  style={styles.merchCard}
+                  onPress={() =>
+                    item.linkUrl
+                      ? Linking.openURL(item.linkUrl).catch(() => null)
+                      : setSelectedDetail({
+                          description: "Quando adicionares o link da loja no Firebase, este bloco abre a loja diretamente.",
+                          image: item.image,
+                          subtitle: item.artist,
+                          title: item.title,
+                        })
+                  }
+                >
+                  {hasImage(item.image) ? (
+                    <Image
+                      resizeMode="contain"
+                      source={{ uri: item.image }}
+                      style={styles.merchImage}
+                    />
+                  ) : (
+                    <MediaBox
+                      fallbackIndex={index}
+                      uri={item.image}
+                      style={styles.merchImage}
+                    />
+                  )}
+                  <Text numberOfLines={1} style={styles.cardTitle}>
+                    {item.title}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.cardSubtitle}>
+                    {item.artist} {item.price ? `• ${item.currency === "USD" ? "$" : item.currency === "GBP" ? "£" : item.currency === "EUR" ? "€" : ""}${item.price}` : ""}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </ScrollView>
+        </View>
+        ) : null}
+
+        <View style={styles.section}>
+          <SectionHeader
+            action="Ver todos"
+            onPress={() => router.push("/main/search")}
+            title="Posts"
+          />
+          <View style={styles.homePostsGrid}>
+            {shuffleItems(featuredPosts).slice(0, 9).map((post, index) => (
+              <Pressable
+                key={post.id}
+                style={styles.homePostTile}
+                onPress={() => openPost(post)}
+              >
+                <MediaBox
+                  fallbackIndex={index}
+                  uri={post.image}
+                  style={styles.gridPost}
+                >
+                  <View style={styles.postShade} />
+                  <Text numberOfLines={2} style={styles.gridPostText}>
+                    {post.artist}
+                  </Text>
+                </MediaBox>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.finalBand}>
+          <View style={styles.finalIcon}>
+            <Ionicons name="sparkles" size={20} color="#06110d" />
+          </View>
+          <View style={styles.finalCopy}>
+            <Text style={styles.finalTitle}>O teu som, sempre vivo</Text>
+            <Text style={styles.finalText}>
+              A home mistura musica, posts, artistas e loja para ficares sempre a um toque do que importa.
+            </Text>
+          </View>
         </View>
       </ScrollView>
 
       {showFull && fullType && fullSource && (
-        <FullscreenMedia
+        <FullscreenPostMedia
           visible={showFull}
           onClose={() => {
             setShowFull(false);
@@ -545,57 +1103,483 @@ export default function HomeScreen() {
   );
 }
 
+function MusicRail({
+  items,
+  onPress,
+  onPlay,
+  title,
+  width,
+}: {
+  items: MusicItem[];
+  onPress: (item: MusicItem) => void;
+  onPlay: (item: MusicItem) => void;
+  title: string;
+  width: number;
+}) {
+  return (
+    <View style={styles.section}>
+      <SectionHeader title={title} />
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.horizontalContent}
+      >
+        <View style={styles.railRow}>
+          {items.map((item, index) => (
+            <Pressable key={`${item.type}-${item.id}`} style={{ width }} onPress={() => onPress(item)}>
+              <MediaBox
+                fallbackIndex={index}
+                uri={item.image}
+                style={[styles.coverCard, { width, height: width }]}
+              >
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.playChip,
+                    pressed ? styles.playButtonPressed : null,
+                  ]}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    void onPlay(item);
+                  }}
+                >
+                  <Ionicons name="play" size={16} color="#06110d" />
+                </Pressable>
+              </MediaBox>
+              <Text numberOfLines={1} style={styles.cardTitle}>
+                {item.title}
+              </Text>
+              <Text numberOfLines={1} style={styles.cardSubtitle}>
+                {item.artist}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000" },
-  pageTitle: { color: "#fff", fontWeight: "700" },
-  section: { width: "100%" },
-  sectionTitle: { color: "#fff", fontWeight: "600" },
-  bigBanner: { width: "100%", borderRadius: 0 },
-  musicBox: { borderRadius: 18, backgroundColor: "#111" },
-  squareBox: { borderRadius: 18, backgroundColor: "#111" },
-  fashionBoxTransparent: {
-    backgroundColor: "transparent",
-    resizeMode: "contain",
+  artistBubble: {
+    alignItems: "center",
+    width: 92,
   },
-  fashionLabel: { color: "#fff", textAlign: "center", fontWeight: "500" },
-  itemTitle: { color: "#fff", fontWeight: "600" },
-  itemArtist: { color: "#888" },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.6)",
+  artistFallback: {
+    alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 20,
+  },
+  artistName: {
+    color: "#f7f7f7",
+    fontSize: 13,
+    fontWeight: "700",
+    marginTop: 10,
+    textAlign: "center",
+  },
+  artistRow: {
+    flexDirection: "row",
+    gap: 18,
+  },
+  avatarImage: {
+    borderColor: "rgba(255,255,255,0.18)",
+    borderRadius: 39,
+    borderWidth: 1,
+    height: 78,
+    width: 78,
+  },
+  cardSubtitle: {
+    color: "#93a19d",
+    fontSize: 13,
+    marginTop: 3,
+  },
+  cardTitle: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "800",
+    marginTop: 11,
+  },
+  container: {
+    backgroundColor: "#000",
+    flex: 1,
+  },
+  coverCard: {
+    borderRadius: 18,
+    overflow: "hidden",
   },
   detailCard: {
-    width: "100%",
-    maxWidth: 380,
     alignSelf: "center",
-    borderRadius: 24,
-    padding: 16,
-    backgroundColor: "rgba(12,12,12,0.98)",
+    backgroundColor: "rgba(11,14,13,0.98)",
+    borderColor: "rgba(255,255,255,0.1)",
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    maxWidth: 380,
+    padding: 16,
+    width: "100%",
+  },
+  detailDescription: {
+    color: "#d8dfdc",
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 12,
   },
   detailImage: {
-    width: "100%",
+    borderRadius: 16,
     height: 260,
-    borderRadius: 18,
     marginBottom: 14,
+    overflow: "hidden",
+    width: "100%",
+  },
+  detailSubtitle: {
+    color: "#8fa09b",
+    fontSize: 13,
+    marginTop: 4,
   },
   detailTitle: {
     color: "#fff",
     fontSize: 18,
-    fontWeight: "700",
+    fontWeight: "800",
   },
-  detailSubtitle: {
-    color: "#a7a7a7",
+  finalBand: {
+    alignItems: "center",
+    backgroundColor: "#d9efe9",
+    borderRadius: 26,
+    flexDirection: "row",
+    gap: 14,
+    marginHorizontal: "5%",
+    marginTop: 34,
+    padding: 18,
+  },
+  finalCopy: {
+    flex: 1,
+  },
+  finalIcon: {
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: 21,
+    height: 42,
+    justifyContent: "center",
+    width: 42,
+  },
+  finalText: {
+    color: "#29413a",
     fontSize: 13,
+    lineHeight: 18,
     marginTop: 4,
   },
-  detailDescription: {
-    color: "#ddd",
+  finalTitle: {
+    color: "#06110d",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  gridPost: {
+    borderRadius: 0,
+    justifyContent: "flex-end",
+    overflow: "hidden",
+    padding: 6,
+    height: "100%",
+    width: "100%",
+  },
+  gridPostText: {
+    color: "#b9b9b9",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  homePostsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  homePostTile: {
+    aspectRatio: 0.76,
+    backgroundColor: "#0f0f0f",
+    borderColor: "#000",
+    borderWidth: 1,
+    overflow: "hidden",
+    width: "33.3333%",
+  },
+  headerAction: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 2,
+  },
+  headerActionText: {
+    color: "#d9efe9",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  heroBanner: {
+    justifyContent: "flex-end",
+    overflow: "hidden",
+    width: "100%",
+  },
+  heroImage: { borderRadius: 0 },
+  heroButton: {
+    alignItems: "center",
+    alignSelf: "flex-start",
+    backgroundColor: "#d9efe9",
+    borderRadius: 999,
+    flexDirection: "row",
+    gap: 7,
+    marginTop: 18,
+    paddingHorizontal: 15,
+    paddingVertical: 11,
+  },
+  heroButtonText: {
+    color: "#06110d",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  heroContent: {
+    bottom: 0,
+    left: 0,
+    padding: 22,
+    position: "absolute",
+    right: 0,
+  },
+  heroEyebrow: {
+    color: "#d9efe9",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0,
+    marginBottom: 8,
+    textTransform: "uppercase",
+  },
+  heroShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.34)",
+  },
+  heroSubtitle: {
+    color: "#e8eeee",
     fontSize: 14,
     lineHeight: 20,
+    marginTop: 8,
+    maxWidth: "88%",
+  },
+  heroTitle: {
+    color: "#fff",
+    fontSize: 34,
+    fontWeight: "900",
+    letterSpacing: 0,
+  },
+  heroWrap: {
+    marginTop: 20,
+  },
+  horizontalContent: {
+    paddingHorizontal: "5%",
+  },
+  kicker: {
+    color: "#8fa09b",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  mediaFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mediaImage: {
+    borderRadius: 18,
+  },
+  merchCard: {
+    marginRight: 18,
+    width: 160,
+  },
+  merchImage: {
+    borderRadius: 16,
+    height: 210,
+    overflow: "hidden",
+    width: 160,
+  },
+  merchLogoCard: {
+    alignItems: "center",
+    backgroundColor: "transparent",
+    height: 118,
+    justifyContent: "center",
+    width: 176,
+  },
+  merchLogoFallback: {
+    alignItems: "center",
+    borderRadius: 14,
+    height: 74,
+    justifyContent: "center",
+    width: "100%",
+  },
+  merchLogoImage: {
+    height: 78,
+    width: "100%",
+  },
+  merchLogoInitial: {
+    color: "#fff",
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  merchLogoName: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "800",
     marginTop: 12,
+    textAlign: "center",
+  },
+  merchLogoRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  merchProductsContent: {
+    paddingHorizontal: "5%",
+    paddingTop: 14,
+  },
+  modalBackdrop: {
+    backgroundColor: "rgba(0,0,0,0.68)",
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 20,
+  },
+  pageTitle: {
+    color: "#fff",
+    fontSize: 36,
+    fontWeight: "900",
+    letterSpacing: 0,
+  },
+  playChip: {
+    alignItems: "center",
+    backgroundColor: "#d9efe9",
+    borderRadius: 17,
+    bottom: 12,
+    height: 34,
+    justifyContent: "center",
+    position: "absolute",
+    right: 12,
+    width: 34,
+  },
+  playButtonPressed: { opacity: 0.42, transform: [{ scale: 0.9 }] },
+  preReleaseActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 14,
+  },
+  preReleaseBell: {
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    height: 38,
+    justifyContent: "center",
+    width: 42,
+  },
+  preReleaseCard: {
+    alignItems: "center",
+    flexDirection: "row",
+    height: 132,
+    overflow: "hidden",
+    paddingHorizontal: "5%",
+    paddingVertical: 14,
+  },
+  preReleaseColorSample: {
+    height: 8,
+    left: "50%",
+    opacity: 1,
+    position: "absolute",
+    top: "50%",
+    transform: [{ scale: 110 }],
+    width: 8,
+  },
+  preReleaseFade: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+  },
+  preReleaseCover: {
+    borderRadius: 12,
+    height: 98,
+    overflow: "hidden",
+    width: 98,
+  },
+  preReleaseInfo: {
+    flex: 1,
+    marginLeft: 14,
+  },
+  preReleaseMeta: {
+    color: "rgba(255,255,255,0.8)",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 4,
+  },
+  preReleaseSection: {
+    marginTop: 34,
+    width: "100%",
+  },
+  preReleaseTime: {
+    alignItems: "center",
+    flexDirection: "row",
+  },
+  preReleaseTimeBox: {
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    minWidth: 42,
+    paddingHorizontal: 6,
+    paddingVertical: 5,
+  },
+  preReleaseTimeBoxLabel: {
+    color: "#777",
+    fontSize: 7,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  preReleaseTimeSeparator: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "900",
+    marginHorizontal: 3,
+  },
+  preReleaseTimeText: {
+    color: "#050505",
+    fontSize: 14,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "900",
+    marginTop: 1,
+  },
+  preReleaseTitle: {
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  postShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.22)",
+  },
+  railRow: {
+    flexDirection: "row",
+    gap: 16,
+  },
+  searchButton: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: 20,
+    height: 40,
+    justifyContent: "center",
+    width: 40,
+  },
+  section: {
+    marginTop: 34,
+    width: "100%",
+  },
+  sectionHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 15,
+    paddingHorizontal: "5%",
+  },
+  sectionTitle: {
+    color: "#fff",
+    fontSize: 22,
+    fontWeight: "900",
+    letterSpacing: 0,
+  },
+  titleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: "5%",
   },
 });

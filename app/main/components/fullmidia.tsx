@@ -3,115 +3,93 @@ import Slider from "@react-native-community/slider";
 import { ResizeMode, Video } from "expo-av";
 import { BlurView } from "expo-blur";
 import { useRouter } from "expo-router";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Animated,
   Dimensions,
+  Easing,
   Image,
-  PanResponder,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-import { formatMediaTime, useSharedMediaProgress } from "./SharedMediaProgress";
+import { usePlayer } from "../../../context/PlayerContext";
+import { isTrackLiked, toggleTrackLike } from "../../../firebase/socialClient";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { formatMediaTime } from "./SharedMediaProgress";
 
 const { width, height } = Dimensions.get("window");
 const ART_SIZE = width * 0.9;
-const ARTIST_PANEL_EXPAND_DISTANCE = 320;
-// Ajusta aqui a altura do menu inteiro:
-// diminui este valor para descer o menu, aumenta para subir.
-const ARTIST_PANEL_BOTTOM = -35;
-const SHEET_HANDLE_TOUCH_HEIGHT = 52;
-const ARTIST_PANEL_PEEK_HEIGHT = 104;
-// Nota: o painel do artista usa translateY em vez de animar height,
-// porque height não é suportado pelo native animated module neste fluxo.
-const ARTIST_PANEL_MAX_HEIGHT = height * 0.68;
-const ARTIST_PANEL_TRAVEL = Math.max(
-  0,
-  ARTIST_PANEL_MAX_HEIGHT - ARTIST_PANEL_PEEK_HEIGHT,
-);
 
 export default function FullMidia() {
   const router = useRouter();
+  const { user } = useCurrentUser();
+  const { playNext, playPrevious, seek, status, togglePlay, track } = usePlayer();
   const [expanded, setExpanded] = useState(true);
-  const [isArtistSheetScrollable, setIsArtistSheetScrollable] = useState(false);
   const [liked, setLiked] = useState(false);
-  const [following, setFollowing] = useState(false);
-  const [reportModalVisible, setReportModalVisible] = useState(false);
-  const [reportTarget, setReportTarget] = useState<"artist" | "music" | null>(
-    null,
-  );
-  const [reportReason, setReportReason] = useState("");
-  const {
-    progress,
-    currentTime,
-    duration,
-    isPlaying,
-    setProgress,
-    togglePlayback,
-  } = useSharedMediaProgress();
+  const [lyricsVisible, setLyricsVisible] = useState(false);
+  const [dragProgress, setDragProgress] = useState<number | null>(null);
+  const [settledProgress, setSettledProgress] = useState<number | null>(null);
 
   const boxAnim = useRef(new Animated.Value(1)).current;
   const controlsAnim = useRef(new Animated.Value(0)).current;
   const blurAnim = useRef(new Animated.Value(0)).current;
   const bgAnim = useRef(new Animated.Value(0)).current;
-  const artistSheetAnim = useRef(new Animated.Value(0)).current;
-  const artistContentScrollY = useRef(new Animated.Value(0)).current;
-  const artistSheetProgress = useRef(0);
-  const artistSheetDragStart = useRef(0);
+  const lyricsAnim = useRef(new Animated.Value(0)).current;
+  const loadedStatus = status?.isLoaded ? status : null;
+  const currentTime = loadedStatus ? loadedStatus.positionMillis / 1000 : 0;
+  const duration = loadedStatus?.durationMillis
+    ? loadedStatus.durationMillis / 1000
+    : 0;
+  const liveProgress = duration > 0 ? currentTime / duration : 0;
+  const progress = dragProgress ?? settledProgress ?? liveProgress;
+  const visibleCurrentTime = dragProgress === null ? currentTime : dragProgress * duration;
+  const isPlaying = loadedStatus?.isPlaying ?? false;
+  const lyricsLines = useMemo(
+    () =>
+      (track?.lyrics ?? "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    [track?.lyrics],
+  );
 
   useEffect(() => {
-    const listener = artistSheetAnim.addListener(({ value }) => {
-      artistSheetProgress.current = value;
-      setIsArtistSheetScrollable(value > 0.96);
-    });
+    let active = true;
+
+    if (!user?.uid || !track?.id) {
+      setLiked(false);
+      return;
+    }
+
+    isTrackLiked(user.uid, track.id)
+      .then((value) => {
+        if (active) setLiked(value);
+      })
+      .catch((error) => console.log("LOAD TRACK LIKE ERROR:", error));
 
     return () => {
-      artistSheetAnim.removeListener(listener);
+      active = false;
     };
-  }, [artistSheetAnim]);
+  }, [track?.id, user?.uid]);
 
-  const snapArtistSheet = (toValue: 0 | 1) => {
-    Animated.timing(artistSheetAnim, {
-      toValue,
-      duration: 260,
-      useNativeDriver: true,
-    }).start();
-  };
+  useEffect(() => {
+    setLyricsVisible(false);
+    lyricsAnim.setValue(0);
+  }, [lyricsAnim, track?.id]);
 
-  const artistSheetPanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_, gestureState) =>
-        Math.abs(gestureState.dy) > 2 &&
-        Math.abs(gestureState.dy) > Math.abs(gestureState.dx),
-      onPanResponderGrant: () => {
-        artistSheetAnim.stopAnimation((value) => {
-          artistSheetProgress.current = value;
-          artistSheetDragStart.current = value;
-        });
-      },
-      onPanResponderMove: (_, gestureState) => {
-        const nextValue =
-          artistSheetDragStart.current -
-          gestureState.dy / ARTIST_PANEL_EXPAND_DISTANCE;
+  useEffect(() => {
+    if (settledProgress === null || dragProgress !== null) {
+      return;
+    }
 
-        artistSheetAnim.setValue(Math.max(0, Math.min(1, nextValue)));
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        const shouldExpand =
-          gestureState.dy < -35 ||
-          (gestureState.dy < 18 && artistSheetProgress.current > 0.5);
-
-        snapArtistSheet(shouldExpand ? 1 : 0);
-      },
-      onPanResponderTerminate: () => {
-        snapArtistSheet(artistSheetProgress.current > 0.5 ? 1 : 0);
-      },
-    }),
-  ).current;
+    if (Math.abs(liveProgress - settledProgress) < 0.015) {
+      setSettledProgress(null);
+    }
+  }, [dragProgress, liveProgress, settledProgress]);
 
   const toggleView = () => {
     blurAnim.setValue(1);
@@ -145,7 +123,7 @@ export default function FullMidia() {
 
   const panelTranslate = controlsAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, 140],
+    outputRange: [0, 90],
   });
 
   const boxScale = boxAnim.interpolate({
@@ -153,46 +131,18 @@ export default function FullMidia() {
     outputRange: [0.85, 1],
   });
 
-  const artistSheetTranslateY = artistSheetAnim.interpolate({
+  const blurOverlayOpacity = blurAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [ARTIST_PANEL_TRAVEL, 0],
+    outputRange: [0, 0.18],
   });
 
-  const artistDetailsOpacity = artistSheetAnim.interpolate({
-    inputRange: [0, 0.18, 0.42, 1],
-    outputRange: [0, 0, 0.3, 1],
-  });
+  function seekToProgress(value: number) {
+    setSettledProgress(value);
+    setDragProgress(null);
 
-  const artistDetailsTranslate = artistSheetAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [26, 0],
-  });
-
-  const blurOverlayOpacity = Animated.add(
-    blurAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: [0, 0.18],
-    }),
-    artistSheetAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: [0.18, 0.52],
-    }),
-  );
-
-  const artistCardOpacity = artistContentScrollY.interpolate({
-    inputRange: [0, 24, 72],
-    outputRange: [1, 0.5, 0],
-    extrapolate: "clamp",
-  });
-
-  const artistCardTranslate = artistContentScrollY.interpolate({
-    inputRange: [0, 72],
-    outputRange: [0, -18],
-    extrapolate: "clamp",
-  });
-
-  function skipTrack(step: number) {
-    setProgress(Math.min(1, Math.max(0, progress + step)));
+    if (duration > 0) {
+      void seek(value * duration * 1000);
+    }
   }
 
   function openComments() {
@@ -202,18 +152,69 @@ export default function FullMidia() {
     );
   }
 
-  function openCredits() {
-    Alert.alert(
-      "Créditos da faixa",
-      "Produção: Studio Name\nComposição: Artist Name\nDireção visual: Sonnor Team",
-    );
+  async function handleToggleLiked() {
+    if (!user?.uid || !track?.id) {
+      Alert.alert("Login necessario", "Entra para guardar esta musica nas curtidas.");
+      return;
+    }
+
+    const previous = liked;
+    setLiked(!previous);
+
+    try {
+      setLiked(await toggleTrackLike(user.uid, track.id));
+    } catch (error) {
+      setLiked(previous);
+      console.log("TOGGLE TRACK LIKE ERROR:", error);
+    }
   }
 
+  function toggleLyrics() {
+    if (lyricsLines.length === 0) {
+      Alert.alert("Lyrics", "Esta musica ainda nao tem lyrics.");
+      return;
+    }
+
+    const nextVisible = !lyricsVisible;
+    setLyricsVisible(nextVisible);
+    Animated.timing(lyricsAnim, {
+      toValue: nextVisible ? 1 : 0,
+      duration: nextVisible ? 320 : 220,
+      easing: nextVisible ? Easing.out(Easing.cubic) : Easing.inOut(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }
+
+  const lyricsOpacity = lyricsAnim.interpolate({
+    inputRange: [0, 0.2, 1],
+    outputRange: [0, 0, 1],
+  });
+
+  const lyricsTranslateY = lyricsAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [34, 0],
+  });
+
+  const lyricsScale = lyricsAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.97, 1],
+  });
+
   return (
-    <Pressable
-      style={styles.container}
-      onPress={!expanded ? toggleView : undefined}
-    >
+    <View style={styles.container}>
+      {track?.cover ? (
+        <Image
+          blurRadius={28}
+          resizeMode="cover"
+          source={{ uri: track.cover }}
+          style={styles.coverBackground}
+        />
+      ) : null}
+      <View pointerEvents="none" style={styles.coverBackgroundShade} />
+      {!expanded ? (
+        <Pressable style={styles.collapsedTapLayer} onPress={toggleView} />
+      ) : null}
+
       <Animated.View
         style={{
           position: "absolute",
@@ -222,14 +223,16 @@ export default function FullMidia() {
           opacity: bgAnim,
         }}
       >
-        <Video
-          source={require("../../../assets/From KlickPin CF malcolm _ Malcolm Cool gifs Type.mp4")}
-          style={{ width, height }}
-          resizeMode={ResizeMode.COVER}
-          shouldPlay
-          isLooping
-          isMuted
-        />
+        {track?.shortVideo ? (
+          <Video
+            source={{ uri: track.shortVideo }}
+            style={styles.fullscreenClip}
+            resizeMode={ResizeMode.COVER}
+            shouldPlay
+            isLooping
+            isMuted
+          />
+        ) : null}
       </Animated.View>
 
       <Animated.View
@@ -239,12 +242,67 @@ export default function FullMidia() {
         <BlurView tint="dark" intensity={45} style={{ flex: 1 }} />
       </Animated.View>
 
+      <Animated.View
+        pointerEvents={lyricsVisible ? "auto" : "none"}
+        style={[
+          styles.lyricsLayer,
+          {
+            opacity: lyricsOpacity,
+            transform: [
+              { translateY: lyricsTranslateY },
+              { scale: lyricsScale },
+            ],
+          },
+        ]}
+      >
+        <BlurView
+          pointerEvents="none"
+          tint="dark"
+          intensity={38}
+          style={StyleSheet.absoluteFillObject}
+        />
+        <ScrollView
+          alwaysBounceVertical
+          bounces
+          contentContainerStyle={styles.lyricsContent}
+          nestedScrollEnabled
+          overScrollMode="always"
+          scrollEventThrottle={16}
+          scrollEnabled
+          showsVerticalScrollIndicator={false}
+          style={styles.lyricsScroll}
+        >
+          <View style={styles.lyricsHeader}>
+            <View style={styles.lyricsHeaderTitle}>
+              <Ionicons name="mic" size={19} color="#fff" />
+              <Text style={styles.lyricsTitle}>Lyrics</Text>
+            </View>
+            <Pressable onPress={toggleLyrics} hitSlop={12}>
+              <Ionicons name="chevron-down" size={24} color="#fff" />
+            </Pressable>
+          </View>
+          {lyricsLines.map((line, index) => (
+            <Text
+              key={`${line}-${index}`}
+              style={[
+                styles.lyricLine,
+                index === 0 ? styles.lyricLineActive : null,
+              ]}
+            >
+              {line}
+            </Text>
+          ))}
+        </ScrollView>
+      </Animated.View>
+
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()}>
+        <Pressable style={styles.headerBack} onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={30} color="#fff" />
         </Pressable>
-        <Text style={styles.headerTitle}>User name</Text>
-        <Pressable onPress={openComments}>
+        <Text style={styles.headerTitle} numberOfLines={1}>
+          {track?.artist ?? "Sonnor"}
+        </Text>
+        <Pressable style={styles.headerMessage} onPress={openComments}>
           <Ionicons name="chatbubble-outline" size={25} color="#fff" />
         </Pressable>
       </View>
@@ -259,12 +317,11 @@ export default function FullMidia() {
         ]}
       >
         <Pressable onPress={toggleView}>
-          <Image
-            source={{
-              uri: "https://i.pinimg.com/736x/17/c5/01/17c5017285bc72806ff99176f8d1051b.jpg",
-            }}
-            style={styles.artwork}
-          />
+          {track?.cover ? (
+            <Image source={{ uri: track.cover }} style={styles.artwork} />
+          ) : (
+            <View style={styles.artwork} />
+          )}
         </Pressable>
       </Animated.View>
 
@@ -276,14 +333,18 @@ export default function FullMidia() {
       >
         <View style={styles.info}>
           <View>
-            <Text style={styles.music}>Music name</Text>
-            <Text style={styles.user}>user name</Text>
+            <Text style={styles.music}>{track?.title ?? "Sem musica"}</Text>
+            <Text style={styles.user}>{track?.artist ?? "Sonnor"}</Text>
           </View>
           <View style={styles.icons}>
-            <Pressable onPress={openCredits}>
-              <Ionicons name="musical-note-outline" size={32} color="#fff" />
+            <Pressable onPress={toggleLyrics}>
+              <Ionicons
+                name={lyricsVisible ? "mic" : "mic-outline"}
+                size={32}
+                color={lyricsLines.length > 0 ? "#fff" : "rgba(255,255,255,0.42)"}
+              />
             </Pressable>
-            <Pressable onPress={() => setLiked((current) => !current)}>
+            <Pressable onPress={handleToggleLiked}>
               <Ionicons
                 name={liked ? "heart" : "heart-outline"}
                 size={32}
@@ -299,363 +360,99 @@ export default function FullMidia() {
             minimumValue={0}
             maximumValue={1}
             value={progress}
-            onValueChange={setProgress}
+            onSlidingStart={() => setDragProgress(progress)}
+            onValueChange={setDragProgress}
+            onSlidingComplete={seekToProgress}
             minimumTrackTintColor="#fff"
             maximumTrackTintColor="rgba(255,255,255,0.3)"
-            thumbTintColor="#fff"
+            tapToSeek
           />
           <View style={styles.timeWrapper}>
-            <Text style={styles.time}>{formatMediaTime(currentTime)}</Text>
+            <Text style={styles.time}>{formatMediaTime(visibleCurrentTime)}</Text>
             <Text style={styles.time}>{formatMediaTime(duration)}</Text>
           </View>
         </View>
 
         {expanded && (
           <View style={styles.controls}>
-            <Pressable onPress={() => skipTrack(-0.1)}>
+            <Pressable onPress={playPrevious}>
               <Ionicons name="play-back" size={60} color="#fff" />
             </Pressable>
-            <Pressable onPress={togglePlayback}>
+            <Pressable onPress={togglePlay}>
               <Ionicons
                 name={isPlaying ? "pause" : "play"}
                 size={60}
                 color="#fff"
               />
             </Pressable>
-            <Pressable onPress={() => skipTrack(0.1)}>
+            <Pressable onPress={playNext}>
               <Ionicons name="play-forward" size={60} color="#fff" />
             </Pressable>
           </View>
         )}
       </Animated.View>
 
-      <Animated.View
-        style={[
-          styles.sheetGestureHandle,
-          {
-            transform: [{ translateY: artistSheetTranslateY }],
-          },
-        ]}
-        {...artistSheetPanResponder.panHandlers}
-      >
-        <View style={styles.homeIndicator} />
-      </Animated.View>
-
-      <Animated.View
-        style={[
-          styles.bottomBar,
-          {
-            height: ARTIST_PANEL_MAX_HEIGHT,
-            transform: [{ translateY: artistSheetTranslateY }],
-          },
-        ]}
-      >
-        <View style={styles.sheetTopSpacer} />
-        <Animated.View
-          style={{
-            width: "100%",
-            opacity: artistCardOpacity,
-            transform: [{ translateY: artistCardTranslate }],
-          }}
-        >
-          <View style={styles.artistCard}>
-            <Image
-              source={{
-                uri: "https://i.pinimg.com/736x/17/c5/01/17c5017285bc72806ff99176f8d1051b.jpg",
-              }}
-              style={styles.artistAvatar}
-            />
-
-            <View style={styles.artistInfo}>
-              <Text style={styles.artistLabel}>Sobre o artista</Text>
-              <Text style={styles.artistName}>User name</Text>
-              <Text style={styles.artistMeta}>12,4 M ouvintes mensais</Text>
-            </View>
-
-            <Pressable
-              style={styles.followButton}
-              onPress={() => setFollowing((current) => !current)}
-            >
-              <Text style={styles.followButtonText}>
-                {following ? "A seguir" : "Seguir"}
-              </Text>
-            </Pressable>
-          </View>
-        </Animated.View>
-
-        <Animated.View
-          style={[
-            styles.artistExtraContent,
-            {
-              opacity: artistDetailsOpacity,
-              transform: [{ translateY: artistDetailsTranslate }],
-            },
-          ]}
-        >
-          <View style={styles.artistSectionHeader}>
-            <Text style={styles.artistSectionTitle}>Perfil do artista</Text>
-            <Text style={styles.artistSectionHint}>Desliza para ver mais</Text>
-          </View>
-
-          <Animated.ScrollView
-            showsVerticalScrollIndicator
-            bounces
-            nestedScrollEnabled
-            scrollEnabled={isArtistSheetScrollable}
-            style={styles.artistScrollView}
-            contentContainerStyle={styles.artistScrollContent}
-            onScroll={Animated.event(
-              [{ nativeEvent: { contentOffset: { y: artistContentScrollY } } }],
-              { useNativeDriver: true },
-            )}
-            scrollEventThrottle={16}
-          >
-            <Text style={styles.artistBio}>
-              Artista versatil com uma mistura de pop, R&B e visuals marcantes.
-              Lanca sons cinematicos, atua ao vivo com frequencia e tem uma
-              identidade muito forte nas redes.
-            </Text>
-
-            <View style={styles.artistQuickFacts}>
-              <View style={styles.artistFactItem}>
-                <Text style={styles.artistFactLabel}>Origem</Text>
-                <Text style={styles.artistFactValue}>Lisboa, Portugal</Text>
-              </View>
-              <View style={styles.artistFactItem}>
-                <Text style={styles.artistFactLabel}>Genero</Text>
-                <Text style={styles.artistFactValue}>Pop alternativo</Text>
-              </View>
-              <View style={styles.artistFactItem}>
-                <Text style={styles.artistFactLabel}>Atividade</Text>
-                <Text style={styles.artistFactValue}>2018 - presente</Text>
-              </View>
-            </View>
-
-            <View style={styles.artistStatsRow}>
-              <View style={styles.artistStat}>
-                <Text style={styles.artistStatNumber}>4</Text>
-                <Text style={styles.artistStatLabel}>Albuns</Text>
-              </View>
-              <View style={styles.artistStat}>
-                <Text style={styles.artistStatNumber}>38</Text>
-                <Text style={styles.artistStatLabel}>Singles</Text>
-              </View>
-              <View style={styles.artistStat}>
-                <Text style={styles.artistStatNumber}>#12</Text>
-                <Text style={styles.artistStatLabel}>Top chart</Text>
-              </View>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Em destaque</Text>
-              <Text style={styles.artistHighlightText}>
-                Top faixa: Music Name • Ultimo lancamento ha 2 semanas
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Lisboa, Portugal • Pop alternativo • Turne ativa
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Mais sobre</Text>
-              <Text style={styles.artistHighlightText}>
-                3 premios recentes, 2 colaboracoes internacionais e uma nova era
-                visual em preparacao.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Ultimo concerto: Porto • Proximo drop: sexta-feira
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Comunidade</Text>
-              <Text style={styles.artistHighlightText}>
-                1,8 M seguidores, 245 M streams no ultimo ano e destaque em 14
-                playlists editoriais.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Fanbase forte em Lisboa, Porto, Madrid e Paris
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Proximos passos</Text>
-              <Text style={styles.artistHighlightText}>
-                Novo videoclip em producao, collab internacional confirmada e
-                possivel deluxe version a caminho.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Atualizado hoje • Equipa criativa ativa
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>
-                Discografia em foco
-              </Text>
-              <Text style={styles.artistHighlightText}>
-                2 projetos de estudio, 1 deluxe edition, 6 faixas a crescer esta
-                semana e 3 colaboracoes com artistas internacionais.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Catalogo em expansao • Melhor fase comercial
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Presenca digital</Text>
-              <Text style={styles.artistHighlightText}>
-                Conteudo novo quase todos os dias, visual identity forte e uma
-                comunidade muito ativa nos reels e nos lives.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Engagement alto • Marca pessoal bem definida
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Equipa e producao</Text>
-              <Text style={styles.artistHighlightText}>
-                Producao executiva, direcao criativa, styling e realizacao de
-                video alinhados para a proxima era do artista.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Session em estudio marcada para esta semana
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Impacto ao vivo</Text>
-              <Text style={styles.artistHighlightText}>
-                27 datas concluídas no último ciclo, média alta de retenção em
-                palco e uma direção visual muito forte nos concertos.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Festival season ativa • Procura em crescimento
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Colaborações</Text>
-              <Text style={styles.artistHighlightText}>
-                Feats com produtores de pop, trap e R&B, além de parcerias com
-                stylists e realizadores para reforçar a identidade da era.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Novas collabs em negociação
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Notas da equipa</Text>
-              <Text style={styles.artistHighlightText}>
-                Prioridade atual em posicionamento editorial, narrativa visual,
-                consistência de lançamento e expansão da comunidade.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Planeamento estratégico atualizado esta semana
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Faixas populares</Text>
-              <Text style={styles.artistHighlightText}>1. Music Name</Text>
-              <Text style={styles.artistHighlightText}>2. Midnight Echo</Text>
-              <Text style={styles.artistHighlightText}>3. Velvet Lights</Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Top atual com base nos streams recentes
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>
-                Próximos lançamentos
-              </Text>
-              <Text style={styles.artistHighlightText}>
-                Novo single em master final, visualizer em produção e campanha
-                social já em preparação.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Planeado para as próximas semanas
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Resumo da era</Text>
-              <Text style={styles.artistHighlightText}>
-                Estética noturna, som emocional, forte identidade visual e foco
-                em crescimento orgânico de comunidade e catálogo.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Direção artística alinhada com os próximos drops
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Agenda</Text>
-              <Text style={styles.artistHighlightText}>
-                Sessão de estúdio marcada para quarta, gravação de conteúdo no
-                fim de semana e reunião criativa para o próximo visual.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Semana focada em produção e comunicação
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>
-                Highlights recentes
-              </Text>
-              <Text style={styles.artistHighlightText}>
-                Crescimento de streams, melhor retenção em vídeo curto e
-                resposta mais forte da comunidade aos últimos drops.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Momentum positivo nas plataformas
-              </Text>
-            </View>
-
-            <View style={styles.artistHighlightCard}>
-              <Text style={styles.artistHighlightTitle}>Próxima fase</Text>
-              <Text style={styles.artistHighlightText}>
-                Expansão visual, novos feats, narrativa mais forte e lançamentos
-                mais regulares para consolidar a nova era.
-              </Text>
-              <Text style={styles.artistHighlightSubtext}>
-                Estratégia pronta para execução
-              </Text>
-            </View>
-          </Animated.ScrollView>
-        </Animated.View>
-      </Animated.View>
-    </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#860251ff",
+    backgroundColor: "#050505",
     paddingTop: 60,
   },
+  coverBackground: {
+    ...StyleSheet.absoluteFillObject,
+    height: "112%",
+    opacity: 0.9,
+    transform: [{ scale: 1.18 }],
+    width: "112%",
+  },
+  coverBackgroundShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.52)",
+  },
+  collapsedTapLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2,
+  },
   mainContent: {
+    elevation: 4,
+    marginTop: 34,
     paddingBottom: 122,
+    zIndex: 4,
   },
   header: {
-    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    marginBottom: 50,
+    elevation: 4,
+    justifyContent: "center",
+    marginBottom: 34,
+    marginTop: 22,
+    minHeight: 32,
+    paddingHorizontal: 58,
+    zIndex: 4,
+  },
+  headerBack: {
+    left: 20,
+    position: "absolute",
+  },
+  headerMessage: {
+    position: "absolute",
+    right: 20,
   },
   headerTitle: {
     color: "#fff",
     fontSize: 15,
     fontWeight: "400",
+    maxWidth: "62%",
+    textAlign: "center",
+    transform: [{ translateY: 8 }],
   },
   artworkWrapper: {
     alignItems: "center",
     marginBottom: 50,
+    marginTop: 30,
   },
   artwork: {
     width: ART_SIZE,
@@ -683,6 +480,54 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 16,
   },
+  lyricsLayer: {
+    backgroundColor: "rgba(5,5,5,0.36)",
+    borderRadius: 28,
+    bottom: 245,
+    left: 18,
+    overflow: "hidden",
+    position: "absolute",
+    right: 18,
+    top: 112,
+    zIndex: 35,
+  },
+  lyricsContent: {
+    flexGrow: 1,
+    paddingBottom: 46,
+    paddingHorizontal: 24,
+    paddingTop: 26,
+  },
+  lyricsScroll: {
+    flex: 1,
+  },
+  lyricsHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 22,
+  },
+  lyricsHeaderTitle: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  lyricsTitle: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  lyricLine: {
+    color: "rgba(255,255,255,0.68)",
+    fontSize: 24,
+    fontWeight: "800",
+    lineHeight: 34,
+    marginBottom: 15,
+  },
+  lyricLineActive: {
+    color: "#fff",
+    fontSize: 27,
+    lineHeight: 38,
+  },
   slider: {
     paddingHorizontal: 25,
     marginBottom: 40,
@@ -699,194 +544,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 26,
   },
-  sheetGestureHandle: {
+  fullscreenClip: {
+    height: height * 1.16,
+    left: -width * 0.08,
     position: "absolute",
-    left: 0,
-    right: 0,
-    bottom:
-      ARTIST_PANEL_BOTTOM + ARTIST_PANEL_MAX_HEIGHT - SHEET_HANDLE_TOUCH_HEIGHT,
-    height: SHEET_HANDLE_TOUCH_HEIGHT,
-    alignItems: "center",
-    justifyContent: "flex-start",
-    paddingTop: 10,
-    zIndex: 60,
-    elevation: 60,
-  },
-  bottomBar: {
-    position: "absolute",
-    // Ajusta aqui a posicao vertical do corpo "Sobre o artista".
-    bottom: ARTIST_PANEL_BOTTOM,
-    left: 0,
-    right: 0,
-    backgroundColor: "rgba(8,8,8,0.96)",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    alignItems: "center",
-    paddingTop: 14,
-    paddingHorizontal: 18,
-    paddingBottom: 18,
-    overflow: "hidden",
-    zIndex: 40,
-    elevation: 40,
-  },
-  homeIndicator: {
-    width: 120,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: "#fff",
-    opacity: 0.9,
-  },
-  sheetTopSpacer: {
-    width: "100%",
-    height: SHEET_HANDLE_TOUCH_HEIGHT - 6,
-  },
-  artistCard: {
-    width: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 10,
-    padding: 10,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.05)",
-  },
-  artistAvatar: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: "#222",
-  },
-  artistInfo: {
-    flex: 1,
-    marginLeft: 12,
-    marginRight: 12,
-  },
-  artistLabel: {
-    color: "#bdbdbd",
-    fontSize: 11,
-    marginBottom: 4,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-  },
-  artistName: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
-    marginBottom: 2,
-  },
-  artistMeta: {
-    color: "#b3b3b3",
-    fontSize: 11,
-  },
-  followButton: {
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.35)",
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  followButtonText: {
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  artistExtraContent: {
-    width: "100%",
-    marginTop: 10,
-    flex: 1,
-  },
-  artistSectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  artistSectionTitle: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  artistSectionHint: {
-    color: "#9f9f9f",
-    fontSize: 11,
-  },
-  artistScrollView: {
-    flex: 1,
-  },
-  artistScrollContent: {
-    paddingBottom: 560,
-  },
-  artistBio: {
-    color: "#d3d3d3",
-    fontSize: 13,
-    lineHeight: 19,
-    marginBottom: 16,
-  },
-  artistQuickFacts: {
-    borderRadius: 18,
-    padding: 14,
-    backgroundColor: "rgba(255,255,255,0.05)",
-    marginBottom: 14,
-    gap: 10,
-  },
-  artistFactItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  artistFactLabel: {
-    color: "#9f9f9f",
-    fontSize: 12,
-  },
-  artistFactValue: {
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  artistStatsRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 14,
-    gap: 10,
-  },
-  artistStat: {
-    flex: 1,
-    borderRadius: 16,
-    paddingVertical: 12,
-    backgroundColor: "rgba(255,255,255,0.06)",
-    alignItems: "center",
-  },
-  artistStatNumber: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
-    marginBottom: 2,
-  },
-  artistStatLabel: {
-    color: "#b3b3b3",
-    fontSize: 11,
-  },
-  artistHighlightCard: {
-    borderRadius: 18,
-    padding: 14,
-    backgroundColor: "rgba(255,255,255,0.05)",
-    marginBottom: 12,
-  },
-  artistHighlightTitle: {
-    color: "#fff",
-    fontSize: 13,
-    fontWeight: "700",
-    marginBottom: 6,
-  },
-  artistHighlightText: {
-    color: "#d8d8d8",
-    fontSize: 12,
-    lineHeight: 18,
-    marginBottom: 4,
-  },
-  artistHighlightSubtext: {
-    color: "#9f9f9f",
-    fontSize: 11,
-    lineHeight: 16,
+    top: -height * 0.08,
+    width: width * 1.16,
   },
   timeWrapper: {
     flexDirection: "row",

@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useRef, useState } from "react";
 import {
+  Alert,
   Keyboard,
   Image,
   Platform,
@@ -54,14 +55,43 @@ export default function LoginScreen() {
 
     if (!isValidEmail(email) || password.trim() === "") {
       setError(true);
+      Alert.alert("Dados em falta", "Escreve um email valido e a password.");
       return;
     }
 
     try {
       await login(email, password);
       router.replace("/main/home");
-    } catch {
+    } catch (err: any) {
       setError(true);
+
+      if (err?.code === "auth/user-not-found") {
+        Alert.alert(
+          "Conta nao encontrada",
+          "Ainda nao existe uma conta com estes dados. Cria conta primeiro.",
+          [
+            { text: "Cancelar", style: "cancel" },
+            {
+              text: "Criar conta",
+              onPress: () => router.push("/auth/new-account"),
+            },
+          ],
+        );
+        return;
+      }
+
+      if (
+        err?.code === "auth/wrong-password" ||
+        err?.code === "auth/invalid-credential"
+      ) {
+        Alert.alert(
+          "Login invalido",
+          "Confirma se o email e a password estao iguais aos do Firebase Authentication.",
+        );
+        return;
+      }
+
+      Alert.alert("Erro no login", "Nao foi possivel entrar agora.");
     }
   }
 
@@ -161,6 +191,17 @@ export default function LoginScreen() {
             Iniciar sessão com Apple
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.secondary,
+            { paddingVertical: hp(1.8), borderRadius: wp(8) },
+          ]}
+          onPress={() => router.push("/auth/new-account")}
+        >
+          <Text style={[styles.secondaryText, { fontSize: font(15) }]}>
+            Criar conta
+          </Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -228,5 +269,15 @@ const styles = StyleSheet.create({
   appleText: {
     color: "#000",
     fontWeight: "500",
+  },
+  secondary: {
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.65)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryText: {
+    color: "#fff",
+    fontWeight: "600",
   },
 });

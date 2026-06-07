@@ -11,7 +11,9 @@ export default function MainLayout() {
   const showDynamic =
     pathname === "/main/home" ||
     pathname === "/main/search" ||
-    pathname === "/main/profile";
+    pathname === "/main/profile" ||
+    pathname === "/main/library" ||
+    pathname.startsWith("/main/release/");
 
   return (
     <SharedMediaProgressProvider>

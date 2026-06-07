@@ -35,9 +35,7 @@ export function formatMediaTime(seconds: number) {
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
 }
 
-export function SharedMediaProgressProvider({
-  children,
-}: PropsWithChildren) {
+export function SharedMediaProgressProvider({ children }: PropsWithChildren) {
   const [duration] = useState(DEFAULT_DURATION);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);

@@ -14,10 +14,7 @@ import {
 } from "react-native";
 
 import { useResponsive } from "../../..//utils/responsive";
-import {
-  formatMediaTime,
-  useSharedMediaProgress,
-} from "./SharedMediaProgress";
+import { formatMediaTime, useSharedMediaProgress } from "./SharedMediaProgress";
 
 type FullscreenMediaProps = {
   visible: boolean;
@@ -49,6 +46,12 @@ export default function FullscreenMedia({
     togglePlayback,
   } = useSharedMediaProgress();
   const [liked, setLiked] = useState(false);
+  const [dragProgress, setDragProgress] = useState<number | null>(null);
+  const [settledProgress, setSettledProgress] = useState<number | null>(null);
+  const liveProgress = progress;
+  const visibleProgress = dragProgress ?? settledProgress ?? liveProgress;
+  const visibleCurrentTime =
+    dragProgress === null ? currentTime : dragProgress * duration;
 
   const player = useVideoPlayer(source, (videoPlayer) => {
     videoPlayer.loop = true;
@@ -68,6 +71,22 @@ export default function FullscreenMedia({
 
     player.pause();
   }, [isPlaying, player, type]);
+
+  useEffect(() => {
+    if (settledProgress === null || dragProgress !== null) {
+      return;
+    }
+
+    if (Math.abs(liveProgress - settledProgress) < 0.015) {
+      setSettledProgress(null);
+    }
+  }, [dragProgress, liveProgress, settledProgress]);
+
+  function handleProgressComplete(value: number) {
+    setSettledProgress(value);
+    setDragProgress(null);
+    setProgress(value);
+  }
 
   return (
     <Modal visible={visible} animationType="fade" transparent={false}>
@@ -138,7 +157,10 @@ export default function FullscreenMedia({
                   <TouchableOpacity
                     style={styles.actionButton}
                     onPress={() =>
-                      Alert.alert("Report", "A opção de report estará disponível em breve.")
+                      Alert.alert(
+                        "Report",
+                        "A opção de report estará disponível em breve.",
+                      )
                     }
                     activeOpacity={0.85}
                   >
@@ -156,53 +178,59 @@ export default function FullscreenMedia({
 
         {type === "video" && (
           <View style={styles.videoWrapper}>
-            <TouchableOpacity
-              style={styles.videoCloseButton}
-              onPress={onClose}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="close" size={22} color="#fff" />
-            </TouchableOpacity>
-
             <VideoView
+              pointerEvents="none"
               player={player}
-              style={[styles.media, { width: wp(100), height: hp(100) }]}
-              contentFit="contain"
+              style={styles.fullscreenVideo}
+              contentFit="cover"
               allowsFullscreen={false}
+              nativeControls={false}
+              surfaceType="textureView"
             />
 
-            <Pressable
-              style={styles.controlsOverlay}
-              onPress={(event) => event.stopPropagation()}
-            >
-              <View style={styles.controlsCard}>
-                <Slider
-                  style={styles.slider}
-                  minimumValue={0}
-                  maximumValue={1}
-                  value={progress}
-                  onValueChange={setProgress}
-                  minimumTrackTintColor="#fff"
-                  maximumTrackTintColor="rgba(255,255,255,0.35)"
-                  thumbTintColor="#fff"
-                />
+            <View pointerEvents="box-none" style={styles.videoInteractionLayer}>
+              <TouchableOpacity
+                style={styles.videoCloseButton}
+                onPress={onClose}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="close" size={22} color="#fff" />
+              </TouchableOpacity>
 
-                <View style={styles.timeRow}>
-                  <Text style={styles.timeText}>
-                    {formatMediaTime(currentTime)}
-                  </Text>
-                  <Text style={styles.timeText}>{formatMediaTime(duration)}</Text>
-                </View>
-
-                <Pressable style={styles.playButton} onPress={togglePlayback}>
-                  <Ionicons
-                    name={isPlaying ? "pause" : "play"}
-                    size={26}
-                    color="#fff"
+              <View pointerEvents="box-none" style={styles.controlsOverlay}>
+                <View style={styles.controlsCard}>
+                  <Slider
+                    style={styles.slider}
+                    minimumValue={0}
+                    maximumValue={1}
+                    value={visibleProgress}
+                    onSlidingStart={() => setDragProgress(visibleProgress)}
+                    onValueChange={setDragProgress}
+                    onSlidingComplete={handleProgressComplete}
+                    minimumTrackTintColor="#fff"
+                    maximumTrackTintColor="rgba(255,255,255,0.35)"
+                    thumbTintColor="#fff"
                   />
-                </Pressable>
+
+                  <View style={styles.timeRow}>
+                    <Text style={styles.timeText}>
+                      {formatMediaTime(visibleCurrentTime)}
+                    </Text>
+                    <Text style={styles.timeText}>
+                      {formatMediaTime(duration)}
+                    </Text>
+                  </View>
+
+                  <Pressable style={styles.playButton} onPress={togglePlayback}>
+                    <Ionicons
+                      name={isPlaying ? "pause" : "play"}
+                      size={26}
+                      color="#fff"
+                    />
+                  </Pressable>
+                </View>
               </View>
-            </Pressable>
+            </View>
           </View>
         )}
       </View>
@@ -305,8 +333,20 @@ const styles = StyleSheet.create({
   videoWrapper: {
     width: "100%",
     height: "100%",
-    justifyContent: "center",
-    alignItems: "center",
+    backgroundColor: "#000",
+    overflow: "hidden",
+  },
+  fullscreenVideo: {
+    height: "116%",
+    left: "-8%",
+    position: "absolute",
+    top: "-8%",
+    width: "116%",
+  },
+  videoInteractionLayer: {
+    ...StyleSheet.absoluteFillObject,
+    elevation: 100,
+    zIndex: 100,
   },
   videoCloseButton: {
     position: "absolute",
@@ -318,7 +358,8 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.45)",
     alignItems: "center",
     justifyContent: "center",
-    zIndex: 60,
+    elevation: 102,
+    zIndex: 102,
   },
   controlsOverlay: {
     position: "absolute",
@@ -326,8 +367,8 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 36,
     paddingHorizontal: 20,
-    zIndex: 50,
-    elevation: 50,
+    zIndex: 101,
+    elevation: 101,
   },
   controlsCard: {
     backgroundColor: "rgba(0,0,0,0.55)",
@@ -335,8 +376,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 16,
-    zIndex: 51,
-    elevation: 51,
+    zIndex: 103,
+    elevation: 103,
   },
   slider: {
     width: "100%",

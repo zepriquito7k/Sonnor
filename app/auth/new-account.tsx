@@ -1,243 +1,563 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
+  Alert,
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import { register } from "../../firebase/auth";
-import { emailExists } from "../../firebase/authExtra";
-import { isValidEmail } from "../../firebase/validate";
-import { useResponsive } from "../../utils/responsive"; // Import do seu hook
 
-import BackIcon from "../../icons/BackIcon";
-import EyeClosed from "../../icons/EyeClosed";
-import EyeOpen from "../../icons/EyeOpen";
-import KeyIcon from "../../icons/KeyIcon";
-import LockIcon from "../../icons/LockIcon";
-import MailIcon from "../../icons/MailIcon";
+import {
+  register,
+  sendSignupCode,
+  verifySignupCode,
+} from "../../firebase/auth";
+import { isValidEmail } from "../../firebase/validate";
+import { useResponsive } from "../../utils/responsive";
+
+type Step = "choice" | "email" | "code" | "password";
+
+function getSignupCodeErrorAlert(error: any) {
+  if (error?.code === "functions/already-exists") {
+    return {
+      message: "Este email ja tem conta. Podes entrar pelo login.",
+      title: "Conta ja existe",
+    };
+  }
+
+  if (error?.code === "functions/permission-denied") {
+    return {
+      message:
+        "A funcao que envia o codigo ainda nao esta publica/publicada para criar conta sem login.",
+      title: "Permissao no Firebase",
+    };
+  }
+
+  if (error?.code === "functions/failed-precondition") {
+    return {
+      message:
+        "O Gmail SMTP ainda nao esta configurado no servidor.",
+      title: "Email nao configurado",
+    };
+  }
+
+  if (error?.code === "functions/not-found") {
+    return {
+      message:
+        "A funcao de enviar codigo ainda nao foi publicada no Firebase. Publica as Functions e tenta outra vez.",
+      title: "Funcao nao publicada",
+    };
+  }
+
+  if (error?.code === "functions/resource-exhausted") {
+    return {
+      message: "Foram pedidos codigos demais agora. Espera um pouco e tenta novamente.",
+      title: "Muitos pedidos",
+    };
+  }
+
+  if (error?.code === "functions/unavailable") {
+    return {
+      message: "O servico de email esta temporariamente indisponivel. Tenta novamente em instantes.",
+      title: "Email indisponivel",
+    };
+  }
+
+  return {
+    message: "Nao foi possivel enviar o codigo agora.",
+    title: "Erro",
+  };
+}
 
 export default function NewAccount() {
   const router = useRouter();
-  const { wp, hp, font } = useResponsive(); // Inicializando responsividade
+  const { hp, font } = useResponsive();
 
+  const [step, setStep] = useState<Step>("choice");
   const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-
+  const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
+  const codeInputs = useRef<(TextInput | null)[]>([]);
 
-  const [errorEmail, setErrorEmail] = useState(false);
-  const [errorPassword, setErrorPassword] = useState(false);
-  const [errorConfirm, setErrorConfirm] = useState(false);
-
-  async function handleCreate() {
-    setErrorEmail(false);
-
-    if (!isValidEmail(email)) {
-      setErrorEmail(true);
-      return;
+  const stepCopy = useMemo(() => {
+    if (step === "choice") {
+      return {
+        title: "Criar conta",
+        subtitle: "Escolhe como queres comecar no Sonnor.",
+      };
     }
 
-    const exists = await emailExists(email);
-    if (exists) {
-      setErrorEmail(true);
+    if (step === "email") {
+      return {
+        title: "Qual e o teu email?",
+        subtitle: "Vamos enviar um codigo de 4 digitos antes de criar a conta.",
+      };
+    }
+
+    if (step === "code") {
+      return {
+        title: "Confirma o codigo",
+        subtitle: `Enviamos 4 digitos para ${email.trim().toLowerCase()}.`,
+      };
+    }
+
+    return {
+      title: "Cria a tua chave",
+      subtitle: "Agora escolhe uma password para proteger a tua conta.",
+    };
+  }, [email, step]);
+
+  async function handleSendCode() {
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!isValidEmail(cleanEmail)) {
+      Alert.alert("Email invalido", "Escreve um email valido.");
       return;
     }
 
     try {
-      await register(email, password);
-      router.push("/auth/login");
-    } catch (err) {
-      setErrorEmail(true);
-      console.log("CREATE ERROR:", err);
+      setLoading(true);
+      await sendSignupCode(cleanEmail);
+      setEmail(cleanEmail);
+      setStep("code");
+    } catch (error: any) {
+      console.log("SEND SIGNUP CODE ERROR:", error);
+
+      const alert = getSignupCodeErrorAlert(error);
+      Alert.alert(alert.title, alert.message);
+    } finally {
+      setLoading(false);
     }
   }
 
+  async function handleVerifyCode() {
+    if (code.trim().length !== 4) {
+      Alert.alert("Codigo incompleto", "Escreve os 4 digitos enviados por email.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      await verifySignupCode(email, code);
+      setStep("password");
+    } catch (error) {
+      console.log("VERIFY SIGNUP CODE ERROR:", error);
+      Alert.alert("Codigo invalido", "Confirma o codigo ou pede outro.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleCodeDigitChange(value: string, index: number) {
+    const digits = code.padEnd(4, " ").split("");
+    const pastedDigits = value.replace(/\D/g, "");
+
+    if (pastedDigits.length > 1) {
+      pastedDigits
+        .slice(0, 4 - index)
+        .split("")
+        .forEach((digit, offset) => {
+          digits[index + offset] = digit;
+        });
+
+      const nextCode = digits.join("").replace(/\s/g, "");
+      setCode(nextCode);
+
+      const nextEmptyIndex = digits.findIndex((digit) => digit === " ");
+      if (nextCode.length === 4 || nextEmptyIndex === -1) {
+        Keyboard.dismiss();
+      } else {
+        codeInputs.current[nextEmptyIndex]?.focus();
+      }
+
+      return;
+    }
+
+    const digit = pastedDigits.slice(-1);
+
+    digits[index] = digit;
+
+    const nextCode = digits.join("").replace(/\s/g, "");
+    setCode(nextCode);
+
+    if (digit && index < 3) {
+      codeInputs.current[index + 1]?.focus();
+      return;
+    }
+
+    if (digit && index === 3 && nextCode.length === 4) {
+      Keyboard.dismiss();
+    }
+  }
+
+  function handleCodeBackspace(index: number) {
+    if (code[index] || index === 0) {
+      return;
+    }
+
+    codeInputs.current[index - 1]?.focus();
+  }
+
+  async function handleCreateAccount() {
+    if (password.trim().length < 6) {
+      Alert.alert("Password curta", "A password precisa de pelo menos 6 caracteres.");
+      return;
+    }
+
+    if (password !== confirm) {
+      Alert.alert("Passwords diferentes", "Confirma a mesma password nos dois campos.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      await register(email, password);
+      router.replace("/onboarding/create-profile");
+    } catch (error: any) {
+      console.log("CREATE ACCOUNT ERROR:", error);
+
+      if (error?.code === "auth/email-already-in-use") {
+        Alert.alert("Conta ja existe", "Este email ja tem conta. Podes entrar pelo login.");
+        return;
+      }
+
+      Alert.alert("Erro", "Nao foi possivel criar a conta agora.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleApple() {
+    Alert.alert("Apple", "A opcao Apple esta pronta no visual. Falta ligar o provedor Apple no Firebase.");
+  }
+
   return (
-    <View
-      style={[
-        styles.container,
-        { paddingHorizontal: wp(6.4), paddingTop: hp(8) },
-      ]}
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      style={styles.root}
     >
-      <TouchableOpacity
-        style={[styles.backButton, { marginBottom: hp(2.4) }]}
-        onPress={() => router.push("/auth/login")}
-      >
-        <BackIcon size={font(22)} color="#fff" />
-        <Text style={[styles.backText, { fontSize: font(15) }]}>BACK</Text>
-      </TouchableOpacity>
+      <Image
+        source={require("../../assets/Background.gif")}
+        style={styles.background}
+        resizeMode="cover"
+      />
+      <View style={styles.overlay} />
 
-      <Text
-        style={[styles.logoText, { fontSize: font(60), marginBottom: hp(4.7) }]}
-      >
-        Sonnor
-      </Text>
+      <View style={[styles.content, { paddingTop: hp(7) }]}>
+        <Pressable style={styles.backButton} onPress={() => step === "choice" ? router.replace("/") : setStep("choice")}>
+          <Ionicons name="chevron-back" size={22} color="#fff" />
+        </Pressable>
 
-      <Text style={[styles.titleLarge, { fontSize: font(34) }]}>Let’s get</Text>
-      <Text style={[styles.titleLarge, { fontSize: font(34) }]}>started</Text>
+        <Text style={[styles.logo, { fontSize: font(46) }]}>Sonnor</Text>
 
-      {/* EMAIL */}
-      <View
-        style={[
-          styles.inputContainer,
-          { height: hp(6.5), marginTop: hp(2.4), borderRadius: wp(12) },
-          errorEmail && { borderColor: "#8B0000", borderWidth: 1 },
-        ]}
-      >
-        <MailIcon size={font(22)} color="#8f8f99" />
-        <TextInput
-          style={[styles.input, { fontSize: font(16), paddingLeft: wp(2.5) }]}
-          placeholder="Email"
-          placeholderTextColor="#808080"
-          value={email}
-          onChangeText={(t) => {
-            setEmail(t);
-            setErrorEmail(false);
-          }}
-        />
-      </View>
+        <View style={styles.heroText}>
+          <Text style={[styles.eyebrow, { fontSize: font(12) }]}>Sonnor account</Text>
+          <Text style={[styles.title, { fontSize: font(34) }]}>{stepCopy.title}</Text>
+          <Text style={[styles.subtitle, { fontSize: font(14) }]}>{stepCopy.subtitle}</Text>
+        </View>
 
-      {/* PASSWORD */}
-      <View
-        style={[
-          styles.inputContainer,
-          { height: hp(6.5), marginTop: hp(2.4), borderRadius: wp(12) },
-          errorPassword && { borderColor: "#8B0000", borderWidth: 1 },
-        ]}
-      >
-        <LockIcon size={font(22)} color="#8f8f99" />
+        <View style={styles.panel}>
+          {step === "choice" ? (
+            <>
+              <TouchableOpacity style={styles.appleButton} onPress={handleApple}>
+                <Ionicons name="logo-apple" size={22} color="#000" />
+                <Text style={styles.appleText}>Iniciar com Apple</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.mailButton} onPress={() => setStep("email")}>
+                <Ionicons name="mail-outline" size={20} color="#fff" />
+                <Text style={styles.mailText}>Iniciar com Mail</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
 
-        <TextInput
-          style={[
-            styles.input,
-            {
-              fontSize: font(16),
-              paddingLeft: wp(2.5),
-              opacity: showPassword ? 0.4 : 1,
-            },
-          ]}
-          placeholder="Password"
-          placeholderTextColor="#808080"
-          secureTextEntry={!showPassword}
-          value={password}
-          onChangeText={(t) => {
-            setPassword(t);
-            setErrorPassword(false);
-          }}
-        />
+          {step === "email" ? (
+            <>
+              <TextInput
+                style={styles.input}
+                placeholder="email@exemplo.com"
+                placeholderTextColor="#777"
+                autoCapitalize="none"
+                autoComplete="email"
+                keyboardType="email-address"
+                textContentType="emailAddress"
+                value={email}
+                onChangeText={setEmail}
+              />
+              <TouchableOpacity
+                disabled={loading}
+                style={[styles.greenButton, loading ? styles.buttonDisabled : null]}
+                onPress={handleSendCode}
+              >
+                <Text style={styles.greenText}>{loading ? "A enviar..." : "Enviar codigo"}</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
 
-        <TouchableOpacity
-          style={[styles.eyeButton, { right: wp(5) }]}
-          onPress={() => setShowPassword(!showPassword)}
-        >
-          {showPassword ? (
-            <EyeOpen size={font(22)} color="#fff" />
-          ) : (
-            <EyeClosed size={font(22)} color="#fff" />
-          )}
+          {step === "code" ? (
+            <>
+              <View style={styles.codeGrid}>
+                {[0, 1, 2, 3].map((index) => (
+                  <TextInput
+                    key={index}
+                    ref={(input) => {
+                      codeInputs.current[index] = input;
+                    }}
+                    style={[
+                      styles.codeBox,
+                      code[index] ? styles.codeBoxFilled : null,
+                    ]}
+                    keyboardType="number-pad"
+                    maxLength={4}
+                    autoComplete="one-time-code"
+                    textContentType="oneTimeCode"
+                    value={code[index] ?? ""}
+                    onChangeText={(value) => handleCodeDigitChange(value, index)}
+                    onKeyPress={({ nativeEvent }) => {
+                      if (nativeEvent.key === "Backspace") {
+                        handleCodeBackspace(index);
+                      }
+                    }}
+                    selectTextOnFocus
+                  />
+                ))}
+              </View>
+              <TouchableOpacity
+                disabled={loading}
+                style={[styles.greenButton, loading ? styles.buttonDisabled : null]}
+                onPress={handleVerifyCode}
+              >
+                <Text style={styles.greenText}>{loading ? "A confirmar..." : "Confirmar codigo"}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity disabled={loading} style={styles.ghostButton} onPress={handleSendCode}>
+                <Text style={styles.ghostText}>Enviar outro codigo</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
+
+          {step === "password" ? (
+            <>
+              <View style={styles.passwordRow}>
+                <TextInput
+                  style={styles.passwordInput}
+                  placeholder="Password"
+                  placeholderTextColor="#777"
+                  secureTextEntry={!showPassword}
+                  value={password}
+                  onChangeText={setPassword}
+                />
+                <TouchableOpacity onPress={() => setShowPassword((value) => !value)}>
+                  <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={21} color="#aaa" />
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="Confirmar password"
+                placeholderTextColor="#777"
+                secureTextEntry={!showPassword}
+                value={confirm}
+                onChangeText={setConfirm}
+              />
+              <TouchableOpacity
+                disabled={loading}
+                style={[styles.greenButton, loading ? styles.buttonDisabled : null]}
+                onPress={handleCreateAccount}
+              >
+                <Text style={styles.greenText}>{loading ? "A criar..." : "Criar conta"}</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
+        </View>
+
+        <TouchableOpacity style={styles.loginLink} onPress={() => router.replace("/auth/login")}>
+          <Text style={styles.loginText}>Ja tenho conta</Text>
         </TouchableOpacity>
       </View>
-
-      {/* CONFIRM PASSWORD */}
-      <View
-        style={[
-          styles.inputContainer,
-          { height: hp(6.5), marginTop: hp(2.4), borderRadius: wp(12) },
-          errorConfirm && { borderColor: "#8B0000", borderWidth: 1 },
-        ]}
-      >
-        <KeyIcon size={font(22)} color="#8f8f99" />
-
-        <TextInput
-          style={[
-            styles.input,
-            {
-              fontSize: font(16),
-              paddingLeft: wp(2.5),
-              opacity: showConfirm ? 0.4 : 1,
-            },
-          ]}
-          placeholder="Confirm password"
-          placeholderTextColor="#808080"
-          secureTextEntry={!showConfirm}
-          value={confirm}
-          onChangeText={(t) => {
-            setConfirm(t);
-            setErrorConfirm(false);
-          }}
-        />
-
-        <TouchableOpacity
-          style={[styles.eyeButton, { right: wp(5) }]}
-          onPress={() => setShowConfirm(!showConfirm)}
-        >
-          {showConfirm ? (
-            <EyeOpen size={font(22)} color="#fff" />
-          ) : (
-            <EyeClosed size={font(22)} color="#fff" />
-          )}
-        </TouchableOpacity>
-      </View>
-
-      <TouchableOpacity
-        style={[
-          styles.signInButton,
-          { height: hp(6.5), marginTop: hp(4), borderRadius: wp(12) },
-        ]}
-        onPress={handleCreate}
-      >
-        <Text style={[styles.signInButtonText, { fontSize: font(18) }]}>
-          Sign Up
-        </Text>
-      </TouchableOpacity>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
     backgroundColor: "#000",
   },
+  background: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.35,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.68)",
+  },
+  content: {
+    flex: 1,
+    paddingHorizontal: 22,
+  },
   backButton: {
-    flexDirection: "row",
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: "center",
-    gap: 5,
-  },
-  backText: { color: "#fff", fontWeight: "500" },
-
-  logoText: {
-    fontFamily: "Bristol",
-    color: "#fff",
-    textAlign: "center",
-  },
-
-  titleLarge: { color: "#fff" },
-
-  inputContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#111",
-    paddingHorizontal: 20,
-    borderWidth: 0,
-  },
-
-  input: { flex: 1, color: "#fff" },
-
-  eyeButton: {
-    position: "absolute",
-    opacity: 0.3,
-  },
-
-  signInButton: {
-    backgroundColor: "#fff",
     justifyContent: "center",
-    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
   },
-  signInButtonText: { color: "#000", fontWeight: "600" },
+  logo: {
+    color: "#fff",
+    fontFamily: "Bristol",
+    textAlign: "center",
+    marginTop: 8,
+  },
+  heroText: {
+    marginTop: 54,
+    marginBottom: 22,
+  },
+  eyebrow: {
+    color: "#6F8FAF",
+    fontWeight: "900",
+    textTransform: "uppercase",
+    marginBottom: 8,
+  },
+  title: {
+    color: "#fff",
+    fontWeight: "900",
+    letterSpacing: 0,
+  },
+  subtitle: {
+    color: "#b8b8b8",
+    lineHeight: 21,
+    marginTop: 10,
+  },
+  panel: {
+    borderRadius: 28,
+    padding: 16,
+    gap: 12,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  appleButton: {
+    minHeight: 56,
+    borderRadius: 28,
+    backgroundColor: "#fff",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  appleText: {
+    color: "#000",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  mailButton: {
+    minHeight: 56,
+    borderRadius: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  mailText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  input: {
+    minHeight: 54,
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    color: "#fff",
+    backgroundColor: "#101010",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    fontSize: 15,
+  },
+  codeGrid: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 10,
+  },
+  codeBox: {
+    flex: 1,
+    height: 62,
+    borderRadius: 18,
+    color: "#fff",
+    fontSize: 27,
+    fontWeight: "900",
+    textAlign: "center",
+    backgroundColor: "#101010",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  codeBoxFilled: {
+    borderColor: "#6F8FAF",
+    backgroundColor: "rgba(111,143,175,0.12)",
+  },
+  codeInput: {
+    textAlign: "center",
+    fontSize: 26,
+    fontWeight: "900",
+    letterSpacing: 10,
+  },
+  passwordRow: {
+    minHeight: 54,
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#101010",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  passwordInput: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 15,
+  },
+  greenButton: {
+    minHeight: 56,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#6F8FAF",
+  },
+  buttonDisabled: {
+    opacity: 0.65,
+  },
+  greenText: {
+    color: "#000",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  ghostButton: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ghostText: {
+    color: "#aaa",
+    fontWeight: "800",
+  },
+  loginLink: {
+    alignSelf: "center",
+    marginTop: 22,
+  },
+  loginText: {
+    color: "#fff",
+    fontWeight: "800",
+  },
 });
