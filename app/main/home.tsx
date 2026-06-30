@@ -24,10 +24,11 @@ import {
   getHomeContent,
   publishDueReleasesAndRefreshCache,
 } from "../../firebase/contentClient";
+import { deletePost } from "../../firebase/contentMutations";
 import { defaultUser } from "../../firebase/defaultContent";
 import type { PostDocument } from "../../firebase/schema";
 import { setReleaseReminder } from "../../firebase/releaseReminderClient";
-import { createLike, createReport } from "../../firebase/socialClient";
+import { createLike, createReport, getLikedPostIds } from "../../firebase/socialClient";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useResponsive } from "../../utils/responsive";
 import MarqueeText from "../../components/MarqueeText";
@@ -40,6 +41,7 @@ type FeaturedPost = {
   id: string;
   image: string;
   likesCount: number;
+  mediaUrls: string[];
   mediaScale: number;
   mediaStageHeight: number;
   mediaStageWidth: number;
@@ -50,6 +52,7 @@ type FeaturedPost = {
   musicCover: string;
   musicName: string;
   overlayMedia: NonNullable<PostDocument["overlayMedia"]>;
+  ownerId: string;
   thumbnail: string;
 };
 
@@ -248,6 +251,20 @@ function formatPostLikesLabel(count: number) {
   }
 
   return `${count} likes`;
+}
+
+function openExternalUrl(url: string) {
+  const trimmedUrl = url.trim();
+
+  if (!trimmedUrl) {
+    return;
+  }
+
+  const normalizedUrl = /^https?:\/\//i.test(trimmedUrl)
+    ? trimmedUrl
+    : `https://${trimmedUrl}`;
+
+  Linking.openURL(normalizedUrl).catch(() => null);
 }
 
 function getSeedNumber(seed: string) {
@@ -646,6 +663,22 @@ export default function HomeScreen() {
 
   useEffect(() => loadHomeContent(), [loadHomeContent]);
 
+  useEffect(() => {
+    let active = true;
+
+    getLikedPostIds(user?.uid)
+      .then((ids) => {
+        if (active) {
+          setLikedPostIds(ids);
+        }
+      })
+      .catch((error) => console.log("LOAD HOME LIKED POSTS ERROR:", error));
+
+    return () => {
+      active = false;
+    };
+  }, [user?.uid]);
+
   useFocusEffect(
     useCallback(() => loadHomeContent(), [loadHomeContent]),
   );
@@ -801,10 +834,8 @@ export default function HomeScreen() {
       ?.map((trackId) => allMusic.find((item) => item.id === trackId && item.type === "track"))
       .filter((item): item is MusicItem => Boolean(item));
 
-    return recent && recent.length > 0
-      ? uniqueBy(recent, getMusicKey).slice(0, 5)
-      : shuffleItems(allMusic, `${homeShuffleSeed}-continue`).slice(0, 5);
-  }, [allMusic, homeData?.recentPlays, homeShuffleSeed]);
+    return recent && recent.length > 0 ? uniqueBy(recent, getMusicKey).slice(0, 5) : [];
+  }, [allMusic, homeData?.recentPlays]);
 
   const recommendedItems = useMemo(
     () =>
@@ -936,9 +967,8 @@ export default function HomeScreen() {
       return item.type === "album" && source ? followedIds.has(getString(source, "userId")) : false;
     });
 
-    const fallback = allMusic.filter((item) => item.type === "album");
     return shuffleItems(
-      items.length > 0 ? uniqueBy(items, getMusicKey) : fallback,
+      uniqueBy(items, getMusicKey),
       `${homeShuffleSeed}-followed`,
     ).slice(0, 5);
   }, [albums, allMusic, followedIds, homeShuffleSeed, tracks]);
@@ -959,6 +989,11 @@ export default function HomeScreen() {
         id: post.id,
         image: getString(post, "mediaUrl") || getString(post, "thumbnailUrl"),
         likesCount: getNumber(post, "likesCount"),
+        mediaUrls: [
+          getString(post, "mediaUrl"),
+          getString(post, "thumbnailUrl"),
+          ...getPostOverlayMedia(post).map((overlay) => overlay.mediaUrl),
+        ],
         mediaScale: getNumber(post, "mediaScale", 1),
         mediaStageHeight: getNumber(post, "mediaStageHeight"),
         mediaStageWidth: getNumber(post, "mediaStageWidth"),
@@ -971,6 +1006,7 @@ export default function HomeScreen() {
         musicCover: getString(linkedTrack, "coverUrl"),
         musicName: getString(linkedTrack, "title"),
         overlayMedia: getPostOverlayMedia(post),
+        ownerId: postUserId,
         thumbnail: getString(post, "thumbnailUrl"),
       };
     });
@@ -1273,6 +1309,40 @@ export default function HomeScreen() {
     }
   }
 
+  function handleDeleteOwnPost(post: FeaturedPost) {
+    if (!user?.uid || post.ownerId !== user.uid) {
+      return;
+    }
+
+    Alert.alert("Delete post?", "This removes the post and the media stored in it.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await deletePost({
+              postId: post.id,
+              mediaUrls: post.mediaUrls,
+            });
+            setHomeData((current) =>
+              current
+                ? {
+                    ...current,
+                    posts: current.posts.filter((item) => item.id !== post.id),
+                  }
+                : current,
+            );
+            closePostReels();
+          } catch (error) {
+            console.log("DELETE HOME POST ERROR:", error);
+            Alert.alert("Error", "Could not delete the post right now.");
+          }
+        },
+      },
+    ]);
+  }
+
   function handleReportPost(post: FeaturedPost) {
     if (!user?.uid) {
       Alert.alert("Login required", "Sign in to report this post.");
@@ -1302,7 +1372,7 @@ export default function HomeScreen() {
                 reason: "Post report",
                 details,
               });
-              Alert.alert("Enviado", "Obrigado. Vamos analisar este post.");
+              Alert.alert("Sent", "Thank you. We will review this post.");
             } catch (error) {
               console.log("REPORT HOME POST ERROR:", error);
               Alert.alert("Error", "Could not send the report right now.");
@@ -1390,7 +1460,10 @@ export default function HomeScreen() {
               y: activePostIndex === null ? 0 : activePostIndex * hp(100),
             }}
           >
-            {activePostSequence.map((post, index) => (
+            {activePostSequence.map((post, index) => {
+              const isOwnPost = user?.uid === post.ownerId;
+
+              return (
               <View
                 key={`home-reel-${post.id}`}
                 style={[styles.reelPage, { height: hp(100) }]}
@@ -1408,6 +1481,16 @@ export default function HomeScreen() {
                 >
                   <Ionicons name="chevron-back" size={28} color="#fff" />
                 </TouchableOpacity>
+
+                {isOwnPost ? (
+                  <TouchableOpacity
+                    style={styles.reelMenuButton}
+                    onPress={() => handleDeleteOwnPost(post)}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="trash-outline" size={24} color="#fff" />
+                  </TouchableOpacity>
+                ) : null}
 
                 {post.musicName ? (
                   <View style={styles.reelMusicInside}>
@@ -1476,7 +1559,8 @@ export default function HomeScreen() {
                   </View>
                 </View>
               </View>
-            ))}
+              );
+            })}
           </ScrollView>
         </View>
       </Modal>
@@ -1486,11 +1570,11 @@ export default function HomeScreen() {
         contentContainerStyle={{ paddingBottom: 0, paddingTop: hp(7) }}
       >
         <View style={styles.titleRow}>
-          <Text style={styles.pageTitle}>Inicio</Text>
+          <Text style={styles.pageTitle}>Home</Text>
         </View>
 
         {showingEventBanners ? (
-          <Text style={styles.eventsSectionTitle}>Eventos</Text>
+          <Text style={styles.eventsSectionTitle}>Events</Text>
         ) : null}
 
         <View style={[styles.heroWrap, showingEventBanners ? styles.heroWrapWithTitle : null]}>
@@ -1644,13 +1728,15 @@ export default function HomeScreen() {
           </View>
         ) : null}
 
-        <MusicRail
-          animatedTitle
-          items={continueItems}
-          onPress={(item) => void playMusic(item)}
-          title="Continue listening"
-          width={wideCardWidth}
-        />
+        {continueItems.length > 0 ? (
+          <MusicRail
+            animatedTitle
+            items={continueItems}
+            onPress={(item) => void playMusic(item)}
+            title="Continue listening"
+            width={wideCardWidth}
+          />
+        ) : null}
 
         <MusicRail
           items={recommendedItems}
@@ -1677,16 +1763,18 @@ export default function HomeScreen() {
           />
         ) : null}
 
-        <MusicRail
-          items={followedMusic}
-          onPress={openMusic}
-          title="De quem segues"
-          width={cardWidth}
-        />
+        {followedMusic.length > 0 ? (
+          <MusicRail
+            items={followedMusic}
+            onPress={openMusic}
+            title="From artists you follow"
+            width={cardWidth}
+          />
+        ) : null}
 
         {merchBrands.length > 0 || merchItems.length > 0 ? (
         <View style={styles.section}>
-          <SectionHeader title="Merch dos artistas" />
+          <SectionHeader title="Artist merch" />
 
           <ScrollView
             horizontal
@@ -1698,11 +1786,8 @@ export default function HomeScreen() {
                 <Pressable
                   key={brand.id}
                   style={styles.merchLogoCard}
-                  onPress={() =>
-                    brand.linkUrl
-                      ? Linking.openURL(brand.linkUrl).catch(() => null)
-                      : null
-                  }
+                  hitSlop={8}
+                  onPress={() => openExternalUrl(brand.linkUrl)}
                 >
                   {hasImage(brand.logoUrl) ? (
                     <Image
@@ -1740,11 +1825,7 @@ export default function HomeScreen() {
                 <Pressable
                   key={item.id}
                   style={styles.merchCard}
-                  onPress={() =>
-                    item.linkUrl
-                      ? Linking.openURL(item.linkUrl).catch(() => null)
-                      : null
-                  }
+                  onPress={() => openExternalUrl(item.linkUrl)}
                 >
                   {hasImage(item.image) ? (
                     <Image
@@ -1774,7 +1855,7 @@ export default function HomeScreen() {
 
         <View style={styles.section}>
           <SectionHeader
-            action="Ver todos"
+            action="See all"
             onPress={() => router.push("/main/search")}
             title="Posts"
           />
@@ -2045,6 +2126,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     zIndex: 14,
   },
+  reelMenuButton: {
+    position: "absolute",
+    top: 58,
+    right: 18,
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 14,
+  },
   reelMusicTitle: {
     color: "#f3f3f3",
     fontSize: 15,
@@ -2271,6 +2362,7 @@ const styles = StyleSheet.create({
   merchCard: {
     marginRight: 18,
     width: 160,
+    zIndex: 1,
   },
   merchImage: {
     borderRadius: 16,
@@ -2284,6 +2376,7 @@ const styles = StyleSheet.create({
     height: 118,
     justifyContent: "center",
     width: 176,
+    zIndex: 5,
   },
   merchLogoFallback: {
     alignItems: "center",
@@ -2311,10 +2404,12 @@ const styles = StyleSheet.create({
   merchLogoRow: {
     flexDirection: "row",
     gap: 12,
+    zIndex: 5,
   },
   merchProductsContent: {
     paddingHorizontal: "5%",
     paddingTop: 14,
+    zIndex: 1,
   },
   modalBackdrop: {
     backgroundColor: "rgba(0,0,0,0.68)",

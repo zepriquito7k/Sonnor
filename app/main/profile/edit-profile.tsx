@@ -80,7 +80,7 @@ export default function EditProfileScreen() {
       })
       .catch((error) => {
         console.log("LOAD EDIT PROFILE ERROR:", error);
-        Alert.alert("Error", "Could not carregar o profile.");
+        Alert.alert("Error", "Could not load the profile.");
       })
       .finally(() => {
         if (active) {

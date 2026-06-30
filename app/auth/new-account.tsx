@@ -36,24 +36,24 @@ function getSignupCodeErrorAlert(error: any) {
   if (error?.code === "functions/permission-denied") {
     return {
       message:
-        "The function that sends the code is not public/published yet for account creation without login.",
-      title: "Firebase permission",
+        "Could not send the code right now. Please try again later.",
+      title: "Error",
     };
   }
 
   if (error?.code === "functions/failed-precondition") {
     return {
       message:
-        "Gmail SMTP is not configured on the server yet.",
-      title: "Email not configured",
+        "The email service is temporarily unavailable. Please try again later.",
+      title: "Email unavailable",
     };
   }
 
   if (error?.code === "functions/not-found") {
     return {
       message:
-        "The code sending function has not been published in Firebase yet. Publish the Functions and try again.",
-      title: "Function not published",
+        "Could not send the code right now. Please try again later.",
+      title: "Error",
     };
   }
 
@@ -239,7 +239,7 @@ export default function NewAccount() {
   }
 
   function handleApple() {
-    Alert.alert("Apple", "The Apple option is ready visually. The Apple provider still needs to be connected in Firebase.");
+    Alert.alert("Apple", "Apple sign-in is not available right now.");
   }
 
   return (

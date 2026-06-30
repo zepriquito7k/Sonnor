@@ -19,7 +19,7 @@ import { StatusBar } from "expo-status-bar";
 
 import { MUSIC_GENRES } from "../../constants/musicGenres";
 import { uploadUriToStorage } from "../../firebase/storageClient";
-import { updateUserProfile } from "../../firebase/userProfile";
+import { saveOnboardingUserProfile } from "../../firebase/userProfile";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getRandomAvatarFallbackColor } from "../../utils/avatarFallback";
 import { pickLibraryAsset } from "../../utils/mediaPicker";
@@ -33,6 +33,29 @@ import {
 type StepKey = "displayName" | "username" | "photo" | "birthDate" | "location" | "interests" | "review";
 
 const steps: StepKey[] = ["displayName", "username", "photo", "birthDate", "location", "interests", "review"];
+
+function getCreateProfileErrorMessage(error: unknown) {
+  const code = (error as { code?: string })?.code || "";
+  const message = (error as { message?: string })?.message || "";
+
+  if (code.includes("permission-denied") || message.toLowerCase().includes("permission")) {
+    return "Could not save your profile right now. Please try again later.";
+  }
+
+  if (code.includes("unauthenticated")) {
+    return "Your session expired. Sign in again to finish your profile.";
+  }
+
+  if (code.includes("storage") || message.toLowerCase().includes("storage")) {
+    return "Your profile photo could not be uploaded. Try another image or continue without a photo.";
+  }
+
+  if (message.toLowerCase().includes("network")) {
+    return "Check your connection and try again.";
+  }
+
+  return "Could not create the profile right now. Please try again later.";
+}
 
 export default function CreateProfileScreen() {
   const { user } = useCurrentUser();
@@ -188,7 +211,7 @@ export default function CreateProfileScreen() {
         }
       }
 
-      await updateUserProfile(user.uid, {
+      await saveOnboardingUserProfile(user, {
         username: username.trim(),
         displayName: displayName.trim(),
         bio: bio.trim(),
@@ -200,13 +223,12 @@ export default function CreateProfileScreen() {
         birthDate: birthDate.trim(),
         interests,
         profileHiddenFields: ["birthDate", "location"],
-        onboardingCompleted: true,
       });
 
       router.replace("/main/home");
     } catch (error) {
       console.log("CREATE PROFILE ERROR:", error);
-      Alert.alert("Error", "Could not create the profile right now.");
+      Alert.alert("Error", getCreateProfileErrorMessage(error));
     } finally {
       setSaving(false);
     }
@@ -382,7 +404,7 @@ export default function CreateProfileScreen() {
               })}
             </View>
             {visibleInterestOptions.length === 0 ? (
-              <Text style={styles.helperText}>Could not find esse estilo.</Text>
+              <Text style={styles.helperText}>Could not find that style.</Text>
             ) : null}
           </View>
         ) : null}
@@ -404,7 +426,7 @@ export default function CreateProfileScreen() {
                 <Ionicons name="musical-notes" size={30} color="#000" />
               </View>
             </View>
-            <Text style={[styles.question, styles.centerQuestion, { fontSize: font(36) }]}>Excelente escolha.</Text>
+            <Text style={[styles.question, styles.centerQuestion, { fontSize: font(36) }]}>Excellent choice.</Text>
             <Text style={styles.reviewText}>Your profile will be ready with {interests.slice(0, 3).join(", ")}.</Text>
           </View>
         ) : null}

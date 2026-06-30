@@ -197,7 +197,7 @@ export default function ReleaseScreen() {
       Date.now();
   const queue: Track[] =
     data?.tracks.map((item) => ({
-      albumId,
+      albumId: isLikedFolder ? item.albumId : albumId,
       artist:
         isLikedFolder && "artistName" in item && typeof item.artistName === "string"
           ? item.artistName
@@ -257,7 +257,15 @@ export default function ReleaseScreen() {
   }
 
   async function toggleSaved() {
-    if (!user?.uid) return;
+    if (!user?.uid) {
+      Alert.alert("Login required", "Sign in to save this folder.");
+      return;
+    }
+
+    if (!albumId || isLikedFolder) {
+      return;
+    }
+
     const next = !saved;
     setSaved(next);
 
@@ -310,6 +318,63 @@ export default function ReleaseScreen() {
     );
   }
 
+  function promptAlbumReport() {
+    if (!user?.uid) {
+      Alert.alert("Login required", "Sign in to report this folder.");
+      return;
+    }
+
+    if (!albumId || isLikedFolder) {
+      return;
+    }
+
+    Alert.prompt(
+      "Report folder",
+      "Enter the report reason.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Send",
+          onPress: async (value?: string) => {
+            const details = value?.trim();
+
+            if (!details) {
+              Alert.alert("Reason required", "Enter the report reason.");
+              return;
+            }
+
+            try {
+              await createReport({
+                reporterId: user.uid,
+                targetType: "album",
+                targetId: albumId,
+                reason: "Folder report",
+                details: `${title}: ${details}`,
+              });
+              showSuccess({ message: "Report sent" });
+            } catch (error) {
+              console.log("REPORT RELEASE FOLDER ERROR:", error);
+              Alert.alert("Error", "Could not send the report right now.");
+            }
+          },
+        },
+      ],
+      "plain-text",
+    );
+  }
+
+  function openFolderOptions() {
+    if (isLikedFolder) {
+      return;
+    }
+
+    Alert.alert(title, "Choose an option for this folder.", [
+      { text: "Report", onPress: promptAlbumReport },
+      { text: saved ? "Remove from saved" : "Save", onPress: () => void toggleSaved() },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }
+
   async function handleLikeTrack(trackId: string) {
     if (!user?.uid) {
       Alert.alert("Login required", "Sign in to like this track.");
@@ -351,7 +416,7 @@ export default function ReleaseScreen() {
                 reporterId: user.uid,
                 targetType: "track",
                 targetId: item.id,
-                reason: "Report de track",
+                reason: "Track report",
                 details: `${item.title}: ${details}`,
               });
               showSuccess({});
@@ -436,7 +501,7 @@ export default function ReleaseScreen() {
           {isLikedFolder ? (
             <View style={styles.topButton} />
           ) : (
-            <Pressable style={styles.topButton} onPress={isAlbumOwner ? confirmDeleteAlbum : undefined}>
+            <Pressable style={styles.topButton} onPress={isAlbumOwner ? confirmDeleteAlbum : openFolderOptions}>
               <Ionicons
                 name={isAlbumOwner ? "trash-outline" : "ellipsis-horizontal"}
                 size={24}
@@ -455,29 +520,64 @@ export default function ReleaseScreen() {
             <View style={styles.cover} />
           )}
 
-          <Text style={styles.title}>{title}</Text>
-          {isLikedFolder ? null : (
-            <Pressable
-              style={styles.artistRow}
-              onPress={openArtistProfile}
-            >
-              {avatar ? (
-                <Image source={{ uri: avatar }} style={styles.artistAvatar} />
-              ) : (
-                <View style={styles.artistAvatarFallback}>
-                  <Ionicons name="person" size={15} color="#fff" />
+          {isLikedFolder ? (
+            <View style={styles.likedHeaderRow}>
+              <View style={styles.likedHeaderText}>
+                <Text style={styles.title}>{title}</Text>
+                <Text style={styles.meta}>
+                  {`${data.tracks.length} ${data.tracks.length === 1 ? "track" : "tracks"}`}
+                </Text>
+              </View>
+              {!isPreRelease ? (
+                <View style={styles.likedInlineActions}>
+                  <Pressable
+                    style={[
+                      styles.actionButton,
+                      randomModeEnabled ? styles.actionButtonActive : null,
+                    ]}
+                    onPress={toggleRandomAfterFolder}
+                  >
+                    <Ionicons
+                      name={randomModeEnabled ? "shuffle" : "repeat"}
+                      size={28}
+                      color={randomModeEnabled ? "#ff5b97" : "#c1cbc8"}
+                    />
+                  </Pressable>
+                  <Pressable style={({ pressed }) => [styles.playButton, pressed ? styles.playButtonPressed : null]} onPress={handleMainPlay}>
+                    <View style={[StyleSheet.absoluteFillObject, styles.likedPlayAccent]} />
+                    <Ionicons
+                      name={isCurrentAlbumTrack && isPlaying ? "pause" : "play"}
+                      size={30}
+                      color="#fff"
+                    />
+                  </Pressable>
                 </View>
-              )}
-              <Text style={styles.artist}>{artist}</Text>
-            </Pressable>
+              ) : null}
+            </View>
+          ) : (
+            <>
+              <Text style={styles.title}>{title}</Text>
+              <Pressable
+                style={styles.artistRow}
+                onPress={openArtistProfile}
+              >
+                {avatar ? (
+                  <Image source={{ uri: avatar }} style={styles.artistAvatar} />
+                ) : (
+                  <View style={styles.artistAvatarFallback}>
+                    <Ionicons name="person" size={15} color="#fff" />
+                  </View>
+                )}
+                <Text style={styles.artist}>{artist}</Text>
+              </Pressable>
+              <Text style={styles.meta}>
+                {`${(album.type || "album").replace(/^./, (letter) => letter.toUpperCase())} · ${relativeReleaseDate(album.releaseDate ?? album.createdAt)} · ${data.tracks.length} tracks`}
+              </Text>
+            </>
           )}
-          <Text style={styles.meta}>
-            {isLikedFolder
-              ? `${data.tracks.length} ${data.tracks.length === 1 ? "track" : "tracks"}`
-              : `${(album.type || "album").replace(/^./, (letter) => letter.toUpperCase())} · ${relativeReleaseDate(album.releaseDate ?? album.createdAt)} · ${data.tracks.length} tracks`}
-          </Text>
         </View>
 
+        {isLikedFolder ? null : (
         <View style={styles.actions}>
           {isLikedFolder ? null : (
             <Pressable style={styles.actionButton} onPress={toggleSaved}>
@@ -519,8 +619,9 @@ export default function ReleaseScreen() {
             </>
           ) : null}
         </View>
+        )}
 
-        <View style={styles.trackList}>
+        <View style={[styles.trackList, isLikedFolder ? styles.likedTrackList : null]}>
           {data.tracks.map((item, index) => {
             const active = currentTrack?.id === item.id;
             const trackTitleWindowStyle = getTrackTitleWindowStyle(item.title);
@@ -699,6 +800,21 @@ const styles = StyleSheet.create({
     gap: 14,
     marginTop: 4,
   },
+  likedHeaderRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 25,
+  },
+  likedHeaderText: {
+    flex: 1,
+    paddingRight: 18,
+  },
+  likedInlineActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 14,
+  },
   actionButton: {
     alignItems: "center",
     height: 42,
@@ -750,6 +866,9 @@ const styles = StyleSheet.create({
   },
   trackList: {
     marginTop: 18,
+  },
+  likedTrackList: {
+    marginTop: 4,
   },
   trackRow: {
     alignItems: "center",

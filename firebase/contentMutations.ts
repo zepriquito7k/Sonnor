@@ -182,7 +182,7 @@ export async function createPost(input: CreatePostInput) {
 
 export async function updatePostMedia(
   postId: string,
-  input: Partial<Pick<PostDocument, "mediaUrl" | "thumbnailUrl" | "mediaScale" | "mediaStageWidth" | "mediaStageHeight" | "overlayMedia">>,
+  input: Partial<Pick<PostDocument, "mediaUrl" | "thumbnailUrl" | "mediaScale" | "mediaStageWidth" | "mediaStageHeight" | "overlayMedia" | "linkedTrackId" | "linkedTrackShortVideoUrl" | "linkedTrackClipStartSeconds" | "linkedTrackClipEndSeconds" | "linkedAlbumId">>,
 ) {
   await updateDoc(doc(db, firestorePaths.post(postId)), {
     ...input,

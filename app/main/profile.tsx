@@ -30,6 +30,7 @@ import {
   createLike,
   createReport,
   createFollow,
+  getLikedPostIds,
   isFollowingUser,
   removeFollow,
 } from "../../firebase/socialClient";
@@ -685,6 +686,22 @@ export default function ProfileScreen() {
   useEffect(() => {
     let active = true;
 
+    getLikedPostIds(user?.uid)
+      .then((ids) => {
+        if (active) {
+          setLikedPostIds(ids);
+        }
+      })
+      .catch((error) => console.log("LOAD PROFILE LIKED POSTS ERROR:", error));
+
+    return () => {
+      active = false;
+    };
+  }, [user?.uid]);
+
+  useEffect(() => {
+    let active = true;
+
     async function loadProfile() {
       const content = await getProfileContent(viewedUserId);
 
@@ -1025,8 +1042,8 @@ export default function ProfileScreen() {
     } catch (error) {
       console.log("FOLLOW PROFILE ERROR:", error);
       Alert.alert(
-        "Could not",
-        "Tenta novamente dentro de alguns seconds.",
+        "Could not update follow",
+        "Please try again later.",
       );
     } finally {
       setFollowLoading(false);
@@ -2135,7 +2152,7 @@ export default function ProfileScreen() {
                         Add item
                       </Text>
                       <Text style={styles.merchActionText}>
-                        Produto, foto, preco e link direto.
+                        Product, photo, price, and direct link.
                       </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={18} color="#777" />
@@ -2154,7 +2171,7 @@ export default function ProfileScreen() {
                     <View style={styles.trackTextBlock}>
                       <Text style={styles.merchActionTitle}>Galeria</Text>
                       <Text style={styles.merchActionText}>
-                        Fotos ou videos dos modelos.
+                        Photos or videos of the models.
                       </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={18} color="#777" />
@@ -2302,7 +2319,7 @@ export default function ProfileScreen() {
                         style={styles.editorThumb}
                       />
                       <Text style={[styles.trackTitle, styles.editorListTitle]}>
-                        {item.mediaType === "video" ? "Video" : "Foto"}
+                        {item.mediaType === "video" ? "Video" : "Photo"}
                       </Text>
                       <Pressable
                         style={styles.iconDangerButton}
@@ -2335,7 +2352,7 @@ export default function ProfileScreen() {
                       <View style={styles.trackTextBlock}>
                         <Text style={styles.trackTitle}>{product.title}</Text>
                         <Text style={styles.trackMeta}>
-                          {product.price || "Sem preco"}
+                          {product.price || "No price"}
                         </Text>
                       </View>
                       <Pressable

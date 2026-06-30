@@ -36,7 +36,7 @@ export default function ManageReleasesScreen() {
     <View style={styles.root}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <Text style={styles.title}>Albums</Text>
-        <Text style={styles.subtitle}>Albums e songs publicados na app.</Text>
+        <Text style={styles.subtitle}>Albums and songs published in the app.</Text>
 
         <Pressable style={pressableFeedback(styles.refreshButton)} onPress={loadData}>
           <Ionicons name="refresh-outline" size={18} color="#fff" />

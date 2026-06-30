@@ -243,7 +243,7 @@ export async function getMusicReviewUserSummaries(userIds: string[]) {
         userId,
         {
           id: userId,
-          displayName: data.displayName || data.username || "Sem name",
+          displayName: data.displayName || data.username || "Unnamed user",
           email: data.email || "",
           followersCount: data.followersCount || 0,
           tracksCount: data.tracksCount || 0,

@@ -67,7 +67,7 @@ export default function Dynamicmenu() {
   const router = useRouter();
   const { showSuccess } = useSuccessFeedback();
   const { user } = useCurrentUser();
-  const { track, status, togglePlay, seek } = usePlayer();
+  const { track, status, togglePlay, seek, stop } = usePlayer();
 
   const [menuVisible, setMenuVisible] = useState(false);
   const [userMenuVisible, setUserMenuVisible] = useState(false);
@@ -208,7 +208,7 @@ export default function Dynamicmenu() {
 
             return {
               id: `music-${item.id}`,
-              reason: note || "Sem mensagem.",
+              reason: note || "No message.",
               reviewer: "Admin",
               title,
             };
@@ -245,6 +245,7 @@ export default function Dynamicmenu() {
     try {
       setLogoutLoading(true);
       closeUserMenu();
+      await stop();
       await logout();
       router.replace("/");
     } catch (error) {
@@ -501,6 +502,7 @@ export default function Dynamicmenu() {
         code: cleanDeleteCode,
         confirmation: deleteConfirmation,
       });
+      await stop();
       await logout().catch((logoutError) =>
         console.log("LOGOUT AFTER DELETE ERROR:", logoutError),
       );
@@ -514,8 +516,8 @@ export default function Dynamicmenu() {
           : error?.code === "functions/permission-denied"
             ? "The code is incorrect or there have been too many attempts."
             : error?.code === "functions/not-found"
-              ? "Could not find esse code. Request another code."
-              : error?.message || "Could not delete the account right now.";
+              ? "Could not find this code. Request another code."
+              : "Could not delete the account right now.";
 
       Alert.alert("Error", message);
     } finally {
@@ -706,7 +708,7 @@ export default function Dynamicmenu() {
 
             <TouchableOpacity style={styles.logoutGrid} activeOpacity={0.62} onPress={handleLogout}>
               <Ionicons name="log-out-outline" size={24} color="#ff7474" />
-              <Text style={styles.logoutGridText}>{logoutLoading ? "A sair..." : "Logout"}</Text>
+              <Text style={styles.logoutGridText}>{logoutLoading ? "Signing out..." : "Logout"}</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -910,8 +912,8 @@ export default function Dynamicmenu() {
                   {visibleReportOptions.length === 0 ? (
                     <Text style={styles.emptyText}>
                       {reportMode === "user"
-                        ? "Nenhum user encontrado."
-                        : "Sem songs ou folders recentes."}
+                        ? "No users found."
+                        : "No recent songs or folders."}
                     </Text>
                   ) : null}
                 </ScrollView>

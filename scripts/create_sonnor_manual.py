@@ -1121,7 +1121,7 @@ async function handleLogin() {
 
     doc.core_properties.title = "Manual completo da app Sonnor"
     doc.core_properties.subject = "Guia tecnico e de apresentacao"
-    doc.core_properties.author = "Codex"
+    doc.core_properties.author = "Sonnor"
     doc.save(OUT)
     print(OUT)
 

@@ -25,7 +25,7 @@ import { deletePost } from "../../firebase/contentMutations";
 import { defaultUser } from "../../firebase/defaultContent";
 import { db } from "../../firebase/dataClient";
 import { updateSearchHistory } from "../../firebase/settingsClient";
-import { createLike, createReport } from "../../firebase/socialClient";
+import { createLike, createReport, getLikedPostIds } from "../../firebase/socialClient";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useResponsive } from "../../utils/responsive";
 import AnimatedSoundWave from "./components/AnimatedSoundWave";
@@ -454,7 +454,7 @@ const CATEGORIES: CategoryItem[] = [
   },
   {
     id: 6,
-    title: "Eletronica",
+    title: "Electronic",
     cover: "",
     icon: "pulse-outline",
     iconColor: "#BDEEFF",
@@ -475,7 +475,7 @@ const CATEGORIES: CategoryItem[] = [
   },
   {
     id: 9,
-    title: "Classica",
+    title: "Classical",
     cover: "",
     icon: "musical-notes-outline",
     iconColor: "#FFF0C7",
@@ -527,6 +527,22 @@ export default function SearchScreen() {
       },
     }),
   ).current;
+
+  useEffect(() => {
+    let active = true;
+
+    getLikedPostIds(user?.uid)
+      .then((ids) => {
+        if (active) {
+          setLikedPostIds(ids);
+        }
+      })
+      .catch((error) => console.log("LOAD SEARCH LIKED POSTS ERROR:", error));
+
+    return () => {
+      active = false;
+    };
+  }, [user?.uid]);
 
   useEffect(() => {
     let active = true;
@@ -680,7 +696,7 @@ export default function SearchScreen() {
           caption:
             "caption" in post && typeof post.caption === "string"
               ? post.caption
-              : "Content prepared for Firebase.",
+              : "New post",
           image:
             "mediaUrl" in post && typeof post.mediaUrl === "string"
               ? post.mediaUrl
@@ -1018,7 +1034,7 @@ export default function SearchScreen() {
       return;
     }
 
-    if (category.title === "Biblioteca") {
+    if (category.title === "Library") {
       setShowAllCategories(false);
       router.push("/main/library");
       return;
@@ -1234,7 +1250,7 @@ export default function SearchScreen() {
   const hasVisiblePosts = filteredPosts.length > 0;
 
   const postGridTitle = activeCategory && !hasVisiblePosts
-    ? `Posts de ${activeCategory}`
+    ? `${activeCategory} posts`
     : "Posts";
 
   const showResults = hasQuery || Boolean(activeCategory);
@@ -1284,8 +1300,8 @@ export default function SearchScreen() {
           >
             <View style={styles.categorySheetHeader}>
               <View>
-                <Text style={styles.categorySheetEyebrow}>Explorar</Text>
-                <Text style={styles.categorySheetTitle}>Categorys</Text>
+                <Text style={styles.categorySheetEyebrow}>Explore</Text>
+                <Text style={styles.categorySheetTitle}>Categories</Text>
               </View>
               <TouchableOpacity
                 activeOpacity={0.75}
@@ -1486,7 +1502,7 @@ export default function SearchScreen() {
               <Ionicons name="close" size={17} color="#000" />
             </TouchableOpacity>
           </View>
-          <Text style={styles.activeFilterHint}>Resultados desta categoria</Text>
+          <Text style={styles.activeFilterHint}>Results from this category</Text>
         </View>
       ) : null}
 
@@ -1497,12 +1513,12 @@ export default function SearchScreen() {
         {showResults && (
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { fontSize: font(14) }]}>
-              Resultados
+              Results
             </Text>
 
             {filteredResults.length === 0 ? (
               <Text style={[styles.emptyText, { fontSize: font(14) }]}>
-                Sem resultados para {activeCategory || trimmedQuery}.
+                No results for {activeCategory || trimmedQuery}.
               </Text>
             ) : (
               filteredResults.map((item) => (
@@ -1661,12 +1677,12 @@ export default function SearchScreen() {
             <View style={styles.section}>
               <View style={styles.sectionHeaderRow}>
                 <Text style={[styles.sectionTitle, { fontSize: font(14) }]}>
-                  Categorys
+                  Categories
                 </Text>
 
                 {activeCategory && (
                   <Text style={[styles.activeCategoryText, { fontSize: font(12) }]}>
-                    Filtro: {activeCategory}
+                    Filter: {activeCategory}
                   </Text>
                 )}
               </View>

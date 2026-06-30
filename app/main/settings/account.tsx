@@ -10,9 +10,9 @@ export default function AccountSettingsScreen() {
       subtitle="Email, password, phone and account deletion."
       sections={[
         {
-          title: "Firebase Auth",
-          description: "Sensitive account changes stay in Firebase Auth and Cloud Functions.",
-          items: [email, "password reset uses OTP Cloud Function", "delete account requires protected function"],
+          title: "Sign-in details",
+          description: "Manage your email, password, and account security.",
+          items: [email, "Password reset uses a secure email code", "Account deletion requires confirmation"],
         },
       ]}
     />

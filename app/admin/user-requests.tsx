@@ -23,8 +23,8 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 const sections: { kind: ProfileRequestKind; title: string; empty: string }[] = [
   {
     kind: "display_name",
-    title: "Mudanca de name",
-    empty: "Sem pedidos de name.",
+    title: "Name changes",
+    empty: "No name requests.",
   },
   {
     kind: "delete_album",
@@ -40,7 +40,7 @@ const sections: { kind: ProfileRequestKind; title: string; empty: string }[] = [
 
 function requestTitle(request: ProfileRequest) {
   if (request.kind === "display_name") {
-    return `${request.currentValue || "Name atual"} -> ${request.requestedValue || "Novo name"}`;
+    return `${request.currentValue || "Current name"} -> ${request.requestedValue || "New name"}`;
   }
 
   if (request.kind === "delete_album") {
@@ -74,7 +74,7 @@ export default function UserRequestsScreen() {
       setRequests(await getAdminProfileRequests());
     } catch (error) {
       console.log("LOAD USER REQUESTS ERROR:", error);
-      Alert.alert("Error", "Could not carregar os pedidos dos users.");
+      Alert.alert("Error", "Could not load user requests.");
     } finally {
       setLoading(false);
     }
@@ -130,10 +130,9 @@ export default function UserRequestsScreen() {
     <View style={styles.root}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <Text style={styles.eyebrow}>Admin</Text>
-        <Text style={styles.title}>Pedidos</Text>
+        <Text style={styles.title}>Requests</Text>
         <Text style={styles.subtitle}>
-          Pedidos dos users separados por tipo. A revisao de criacao de songs continua
-          fora desta lista.
+          User requests grouped by type. Music creation review remains outside this list.
         </Text>
 
         <Pressable style={pressableFeedback(styles.refreshButton)} onPress={loadRequests}>
@@ -166,7 +165,7 @@ export default function UserRequestsScreen() {
                         {statusLabel(request.status)}
                       </Text>
                     </View>
-                    <Text style={styles.meta}>Utilizador: {request.userId}</Text>
+                    <Text style={styles.meta}>User: {request.userId}</Text>
                     <Text style={styles.meta}>Request: {request.title || section.title}</Text>
                     {request.adminName ? (
                       <Text style={styles.meta}>Admin: {request.adminName}</Text>
@@ -198,7 +197,7 @@ export default function UserRequestsScreen() {
                           style={pressableFeedback(styles.rejectButton)}
                           onPress={() => handleReject(request)}
                         >
-                          <Text style={styles.rejectText}>Negar</Text>
+                          <Text style={styles.rejectText}>Deny</Text>
                         </Pressable>
                       </>
                     ) : null}

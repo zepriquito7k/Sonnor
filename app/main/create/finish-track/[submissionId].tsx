@@ -245,7 +245,7 @@ export default function FinishTrackScreen() {
         );
       } catch (error) {
         console.log("LOAD APPROVED SUBMISSION ERROR:", error);
-        Alert.alert("Error", "Could not carregar este release aprovado.");
+        Alert.alert("Error", "Could not load this approved release.");
       } finally {
         if (mounted) setLoading(false);
       }

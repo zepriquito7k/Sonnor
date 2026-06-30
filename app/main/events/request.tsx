@@ -107,7 +107,7 @@ export default function RequestEventScreen() {
 
         <Text style={styles.title}>Divulga um evento na Sonnor</Text>
         <Text style={styles.subtitle}>
-          Envia imagem ou video, link e uma explicacao simples do que pretendes divulgar.
+          Send an image or video, link, and a simple explanation of what you want to promote.
         </Text>
 
         <Pressable style={styles.imagePicker} onPress={pickMedia}>

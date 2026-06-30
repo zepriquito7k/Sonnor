@@ -656,10 +656,31 @@ export async function getProfileContent(userId?: string | null) {
       publishedOnly: true,
     }),
   ]);
+  const trackMap = new Map(tracks.map((track) => [track.id, track]));
+  const linkedTrackIds = posts
+    .map((post) =>
+      "linkedTrackId" in post && typeof post.linkedTrackId === "string"
+        ? post.linkedTrackId
+        : "",
+    )
+    .filter((trackId) => trackId && !trackMap.has(trackId));
+
+  await Promise.all(
+    Array.from(new Set(linkedTrackIds)).map(async (trackId) => {
+      const linkedTrack = await readDocumentWithCache<TrackDocument>(
+        firestoreCollections.tracks,
+        trackId,
+      );
+
+      if (linkedTrack?.audioUrl) {
+        trackMap.set(trackId, linkedTrack);
+      }
+    }),
+  );
 
   return {
     user: userSnapshot ?? defaultAppContent.user,
-    tracks,
+    tracks: Array.from(trackMap.values()),
     albums: Array.from(
       new Map([...scheduledAlbums, ...publishedAlbums].map((album) => [album.id, album])).values(),
     ),

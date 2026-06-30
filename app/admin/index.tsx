@@ -102,10 +102,10 @@ export default function AdminIndexScreen() {
       setProfileRequestCount(
         profileRequests.filter((request) => request.status === "pending").length,
       );
-      setReportsCount(Math.max(nextOverview.reportsCount, countUsefulRows(reports)));
+      setReportsCount(Math.max(nextOverview.reportsCount, reports.length));
       setUserCount(users.length || nextOverview.usersCount);
       setReleaseCount(countUsefulRows(releases) || nextOverview.albumsCount);
-      setPostCount(countUsefulRows(posts) || nextOverview.postsCount);
+      setPostCount(posts.length || nextOverview.postsCount);
       setVerificationCount(
         countUsefulRows(verifications) || nextOverview.verificationRequestsCount,
       );
@@ -133,13 +133,13 @@ export default function AdminIndexScreen() {
   const routes = useMemo<AdminRoute[]>(
     () => [
       {
-        title: "Revisao de songs",
+        title: "Music review",
         description: "Approve, reject, listen to files, and request contact by email.",
         route: "/admin/music-reviews",
         icon: "musical-notes-outline",
         accent: "#f5d47a",
         count: musicReviewCount,
-        countLabel: "por rever",
+        countLabel: "to review",
         priority: musicReviewCount > 0,
       },
       {
@@ -153,17 +153,17 @@ export default function AdminIndexScreen() {
         priority: reportsCount > 0,
       },
       {
-        title: "Pedidos de profile",
+        title: "Profile requests",
         description: "Approve names and requests to delete songs or folders.",
         route: "/admin/user-requests",
         icon: "file-tray-full-outline",
         accent: "#a8c7ff",
         count: profileRequestCount,
-        countLabel: "pendentes",
+        countLabel: "pending",
         priority: profileRequestCount > 0,
       },
       {
-        title: "Utilizadores",
+        title: "Users",
         description: "Search accounts, verify artists, and request account removal.",
         route: "/admin/manage-users",
         icon: "people-outline",
@@ -182,7 +182,7 @@ export default function AdminIndexScreen() {
       },
       {
         title: "Posts",
-        description: "Ver posts publicados e material sinalizado para revisao.",
+        description: "Review published posts and flagged material.",
         route: "/admin/manage-posts",
         icon: "images-outline",
         accent: "#b9ecff",
@@ -196,17 +196,17 @@ export default function AdminIndexScreen() {
         icon: "calendar-outline",
         accent: "#c7f0ff",
         count: eventRequestCount,
-        countLabel: "pedidos",
+        countLabel: "requests",
         priority: eventRequestCount > 0,
       },
       {
-        title: "Verificacoes",
-        description: "Consultar pedidos de badge e provas enviadas.",
+        title: "Verifications",
+        description: "Review badge requests and submitted proof.",
         route: "/admin/verification-requests",
         icon: "shield-checkmark-outline",
         accent: "#e7e7e7",
         count: verificationCount,
-        countLabel: "pedidos",
+        countLabel: "requests",
       },
     ],
     [
@@ -223,10 +223,10 @@ export default function AdminIndexScreen() {
 
   const priorityRoutes = routes.filter((route) => route.priority);
   const calmText = loading
-    ? "A sincronizar painel..."
+    ? "Syncing panel..."
     : priorityRoutes.length > 0
-      ? `${priorityRoutes.length} area${priorityRoutes.length > 1 ? "s" : ""} precisa${priorityRoutes.length > 1 ? "m" : ""} de atencao`
-      : "Tudo limpo right now";
+      ? `${priorityRoutes.length} area${priorityRoutes.length > 1 ? "s" : ""} need${priorityRoutes.length > 1 ? "" : "s"} attention`
+      : "Everything is clear right now";
 
   return (
     <View style={styles.root}>
@@ -248,9 +248,9 @@ export default function AdminIndexScreen() {
               <Text style={styles.statusText}>{calmText}</Text>
             </View>
           </View>
-          <Text style={styles.title}>Centro de controlo</Text>
+          <Text style={styles.title}>Control center</Text>
           <Text style={styles.subtitle}>
-            Moderacao, seguranca e publicacao num painel limpo, com apenas ferramentas reais.
+            Moderation, safety, and publishing in one clean panel with real tools only.
           </Text>
 
           <View style={styles.metricGrid}>
@@ -275,7 +275,7 @@ export default function AdminIndexScreen() {
 
         {priorityRoutes.length > 0 ? (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Prioridade right now</Text>
+            <Text style={styles.sectionTitle}>Priority right now</Text>
             {priorityRoutes.map((item) => (
               <Pressable
                 key={item.route}
@@ -299,7 +299,7 @@ export default function AdminIndexScreen() {
         ) : null}
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Ferramentas admin</Text>
+          <Text style={styles.sectionTitle}>Admin tools</Text>
           <View style={styles.toolGrid}>
             {routes.map((item) => (
               <Pressable
@@ -324,24 +324,24 @@ export default function AdminIndexScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Operacao segura</Text>
+          <Text style={styles.sectionTitle}>Safe operation</Text>
           <View style={styles.operationCard}>
             <View style={styles.operationRow}>
               <Ionicons name="checkmark-circle-outline" size={20} color="#b7f7cf" />
               <Text style={styles.operationText}>
-                Botoes do hub levam apenas para modulos existentes e funcionais.
+                Hub buttons only open existing working modules.
               </Text>
             </View>
             <View style={styles.operationRow}>
               <Ionicons name="lock-closed-outline" size={20} color="#a8c7ff" />
               <Text style={styles.operationText}>
-                Acoes sensiveis continuam dentro das telas proprias, com confirmacao.
+                Sensitive actions stay inside their own screens with confirmation.
               </Text>
             </View>
             <View style={styles.operationRow}>
               <Ionicons name="eye-outline" size={20} color="#f5d47a" />
               <Text style={styles.operationText}>
-                Revisoes importantes aparecem destacadas no topo quando existem pendencias.
+                Important reviews appear at the top when pending work exists.
               </Text>
             </View>
           </View>

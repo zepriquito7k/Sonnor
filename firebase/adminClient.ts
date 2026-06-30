@@ -13,7 +13,14 @@ import { httpsCallable } from "firebase/functions";
 import { auth, functions } from "./config";
 import { db } from "./dataClient";
 import { firestoreCollections } from "./paths";
-import type { UserDocument } from "./schema";
+import type {
+  AlbumDocument,
+  CommentDocument,
+  PostDocument,
+  ReportDocument,
+  TrackDocument,
+  UserDocument,
+} from "./schema";
 
 export type AdminUserListItem = {
   id: string;
@@ -26,6 +33,45 @@ export type AdminUserListItem = {
   verified: boolean;
   verificationOverride: boolean;
   verifiedBy?: string;
+};
+
+export type AdminPostListItem = {
+  id: string;
+  userId: string;
+  userDisplayName: string;
+  username: string;
+  userEmail: string;
+  userAvatarUrl: string;
+  caption: string;
+  mediaType: string;
+  mediaUrl: string;
+  thumbnailUrl: string;
+  linkedTrackId: string;
+  linkedAlbumId: string;
+  status: string;
+  likesCount: number;
+  commentsCount: number;
+  reportsCount: number;
+  createdAt?: PostDocument["createdAt"];
+};
+
+export type AdminReportListItem = {
+  id: string;
+  reporterId: string;
+  reporterDisplayName: string;
+  reporterUsername: string;
+  reporterEmail: string;
+  targetType: ReportDocument["targetType"] | "content";
+  targetId: string;
+  targetTitle: string;
+  targetOwnerId: string;
+  targetOwnerDisplayName: string;
+  reason: string;
+  details: string;
+  status: string;
+  adminResponse: string;
+  createdAt?: ReportDocument["createdAt"];
+  reviewedAt?: ReportDocument["reviewedAt"];
 };
 
 async function listCollection(collectionName: string, fallback: string[]) {
@@ -71,7 +117,7 @@ export async function listAdminUserProfiles(): Promise<AdminUserListItem[]> {
       return {
         id: docSnap.id,
         avatarUrl: data.avatarUrl || data.bannerUrl || "",
-        displayName: data.displayName || data.username || data.email || "Sem name",
+        displayName: data.displayName || data.username || data.email || "Unnamed user",
         email: data.email || "",
         followersCount: data.followersCount || 0,
         tracksCount: data.tracksCount || 0,
@@ -121,7 +167,7 @@ function waitForSignedInUser() {
 
     const timeout = setTimeout(() => {
       unsubscribe();
-      reject(new Error("Session expired. Faz login outra vez antes de usar o admin."));
+      reject(new Error("Session expired. Sign in again before using admin tools."));
     }, 5000);
 
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
@@ -136,8 +182,46 @@ function waitForSignedInUser() {
   });
 }
 
-export function listAdminPosts() {
-  return listCollection(firestoreCollections.posts, []);
+export async function listAdminPosts(): Promise<AdminPostListItem[]> {
+  try {
+    const [postsSnapshot, usersSnapshot] = await Promise.all([
+      getDocs(query(collection(db, firestoreCollections.posts), orderBy("createdAt", "desc"), limit(120))),
+      getDocs(query(collection(db, firestoreCollections.users), limit(300))),
+    ]);
+
+    const usersById = new Map(
+      usersSnapshot.docs.map((docSnap) => [docSnap.id, docSnap.data() as Partial<UserDocument>]),
+    );
+
+    return postsSnapshot.docs.map((docSnap) => {
+      const data = docSnap.data() as Partial<PostDocument>;
+      const owner = data.userId ? usersById.get(data.userId) : undefined;
+
+      return {
+        id: docSnap.id,
+        userId: data.userId || "",
+        userDisplayName:
+          owner?.displayName || owner?.username || owner?.email || data.userId || "Unknown user",
+        username: owner?.username || "",
+        userEmail: owner?.email || "",
+        userAvatarUrl: owner?.avatarUrl || owner?.bannerUrl || "",
+        caption: data.caption || "",
+        mediaType: data.mediaType || "post",
+        mediaUrl: data.mediaUrl || "",
+        thumbnailUrl: data.thumbnailUrl || "",
+        linkedTrackId: data.linkedTrackId || "",
+        linkedAlbumId: data.linkedAlbumId || "",
+        status: data.status || "published",
+        likesCount: data.likesCount || 0,
+        commentsCount: data.commentsCount || 0,
+        reportsCount: data.reportsCount || 0,
+        createdAt: data.createdAt,
+      };
+    });
+  } catch (error) {
+    console.log("ADMIN POSTS LIST ERROR:", error);
+    return [];
+  }
 }
 
 export function listAdminReleases() {
@@ -146,31 +230,91 @@ export function listAdminReleases() {
 
 export function listAdminVerificationRequests() {
   return listCollection(firestoreCollections.verificationRequests, [
-    "Sem pedidos de verificacao",
+    "No verification requests",
   ]);
 }
 
-export async function listAdminReports() {
+export async function listAdminReports(): Promise<AdminReportListItem[]> {
   try {
-    const snapshot = await getDocs(
+    const [reportsSnapshot, usersSnapshot, postsSnapshot, tracksSnapshot, albumsSnapshot, commentsSnapshot] = await Promise.all([
       query(collection(db, firestoreCollections.reports), orderBy("createdAt", "desc"), limit(80)),
+      query(collection(db, firestoreCollections.users), limit(300)),
+      query(collection(db, firestoreCollections.posts), limit(300)),
+      query(collection(db, firestoreCollections.tracks), limit(300)),
+      query(collection(db, firestoreCollections.albums), limit(300)),
+      query(collection(db, firestoreCollections.comments), limit(300)),
+    ].map((nextQuery) => getDocs(nextQuery)));
+
+    const usersById = new Map(
+      usersSnapshot.docs.map((docSnap) => [docSnap.id, docSnap.data() as Partial<UserDocument>]),
+    );
+    const postsById = new Map(
+      postsSnapshot.docs.map((docSnap) => [docSnap.id, docSnap.data() as Partial<PostDocument>]),
+    );
+    const tracksById = new Map(
+      tracksSnapshot.docs.map((docSnap) => [docSnap.id, docSnap.data() as Partial<TrackDocument>]),
+    );
+    const albumsById = new Map(
+      albumsSnapshot.docs.map((docSnap) => [docSnap.id, docSnap.data() as Partial<AlbumDocument>]),
+    );
+    const commentsById = new Map(
+      commentsSnapshot.docs.map((docSnap) => [docSnap.id, docSnap.data() as Partial<CommentDocument>]),
     );
 
-    if (snapshot.empty) {
-      return ["Sem reports por rever"];
-    }
+    return reportsSnapshot.docs.map((docSnap) => {
+      const data = docSnap.data() as Partial<ReportDocument>;
+      const reporter = data.reporterId ? usersById.get(data.reporterId) : undefined;
+      let targetTitle = "Unknown content";
+      let targetOwnerId = "";
 
-    return snapshot.docs.map((docSnap) => {
-      const data = docSnap.data();
-      const reason = typeof data.reason === "string" ? data.reason : "no reason";
-      const targetType = typeof data.targetType === "string" ? data.targetType : "content";
-      const status = typeof data.status === "string" ? data.status : "open";
+      if (data.targetType === "user") {
+        const targetUser = data.targetId ? usersById.get(data.targetId) : undefined;
+        targetTitle = targetUser?.displayName || targetUser?.username || targetUser?.email || "Unknown user";
+        targetOwnerId = data.targetId || "";
+      } else if (data.targetType === "post") {
+        const post = data.targetId ? postsById.get(data.targetId) : undefined;
+        targetTitle = post?.caption || post?.mediaType || "Post without caption";
+        targetOwnerId = post?.userId || "";
+      } else if (data.targetType === "track") {
+        const track = data.targetId ? tracksById.get(data.targetId) : undefined;
+        targetTitle = track?.title || "Unknown song";
+        targetOwnerId = track?.userId || "";
+      } else if (data.targetType === "album") {
+        const album = data.targetId ? albumsById.get(data.targetId) : undefined;
+        targetTitle = album?.title || "Unknown album";
+        targetOwnerId = album?.userId || "";
+      } else if (data.targetType === "comment") {
+        const comment = data.targetId ? commentsById.get(data.targetId) : undefined;
+        targetTitle = comment?.text || "Unknown comment";
+        targetOwnerId = comment?.userId || "";
+      }
 
-      return `${status.toUpperCase()} - ${targetType}: ${reason} (${docSnap.id})`;
+      const targetOwner = targetOwnerId ? usersById.get(targetOwnerId) : undefined;
+
+      return {
+        id: docSnap.id,
+        reporterId: data.reporterId || "",
+        reporterDisplayName:
+          reporter?.displayName || reporter?.username || reporter?.email || data.reporterId || "Unknown reporter",
+        reporterUsername: reporter?.username || "",
+        reporterEmail: reporter?.email || "",
+        targetType: data.targetType || "content",
+        targetId: data.targetId || "",
+        targetTitle,
+        targetOwnerId,
+        targetOwnerDisplayName:
+          targetOwner?.displayName || targetOwner?.username || targetOwner?.email || targetOwnerId || "Unknown owner",
+        reason: data.reason || "No reason provided",
+        details: data.details || "",
+        status: data.status || "open",
+        adminResponse: data.adminResponse || "",
+        createdAt: data.createdAt,
+        reviewedAt: data.reviewedAt,
+      };
     });
   } catch (error) {
     console.log("ADMIN REPORTS FALLBACK:", error);
-    return ["No permission para ler reports ou nenhuma regra publicada"];
+    return [];
   }
 }
 

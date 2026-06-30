@@ -63,10 +63,11 @@ service cloud.firestore {
         || (
           owns(userId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            "username", "displayName", "bio", "avatarUrl", "bannerUrl",
-            "backgroundUrl", "spotifyUrl", "shopUrl", "merchLogoUrl",
+            "username", "displayName", "bio", "avatarUrl", "avatarFallbackColor",
+            "bannerUrl", "backgroundUrl", "spotifyUrl", "shopUrl", "merchLogoUrl",
             "merchName", "merchProducts", "merchGallery", "country", "city",
-            "birthDate", "interests", "profileHiddenFields", "settings", "updatedAt"
+            "birthDate", "interests", "profileHiddenFields", "onboardingCompleted",
+            "settings", "updatedAt"
           ])
         );
       allow delete: if isAdmin();
@@ -208,7 +209,14 @@ service cloud.firestore {
 
     match /follows/{followId} {
       allow read: if signedIn();
-      allow write: if false;
+      allow create: if signedIn()
+        && followId == request.auth.uid + "_" + request.resource.data.followingId
+        && request.resource.data.followerId == request.auth.uid
+        && request.resource.data.followingId is string
+        && request.resource.data.followingId != request.auth.uid
+        && exists(/databases/$(database)/documents/users/$(request.resource.data.followingId));
+      allow delete: if signedIn() && resource.data.followerId == request.auth.uid;
+      allow update: if false;
     }
 
     match /playlists/{playlistId} {

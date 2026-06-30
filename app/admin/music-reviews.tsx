@@ -67,7 +67,7 @@ export default function AdminMusicReviewsScreen() {
       setReviewUsers(userSummaries);
     } catch (error) {
       console.log("LOAD REVIEW QUEUE ERROR:", error);
-      Alert.alert("Error", "Could not carregar a fila de revisao.");
+      Alert.alert("Error", "Could not load the review queue.");
     } finally {
       setLoading(false);
     }
@@ -119,14 +119,14 @@ export default function AdminMusicReviewsScreen() {
       await Linking.openURL(audioUrl);
     } catch (error) {
       console.log("OPEN SUBMISSION AUDIO ERROR:", error);
-      Alert.alert("Error", "Could not abrir o MP3.");
+      Alert.alert("Error", "Could not open the MP3.");
     }
   }
 
   async function handleApprove(submission: MusicSubmissionDocument) {
     try {
       setBusyId(submission.id);
-      await approveMusicSubmission(submission.id, "MP3 aprovado pela revisao Sonnor.");
+      await approveMusicSubmission(submission.id, "MP3 approved by Sonnor review.");
       await loadQueue();
     } catch (error) {
       console.log("APPROVE MUSIC ERROR:", error);
@@ -175,7 +175,7 @@ export default function AdminMusicReviewsScreen() {
     );
 
     if (!allApproved) {
-      Alert.alert("Ainda falta", "Todas as songs precisam estar verificadas.");
+      Alert.alert("Still pending", "All songs must be verified first.");
       return;
     }
 
@@ -183,7 +183,7 @@ export default function AdminMusicReviewsScreen() {
       setBusyId(group.id);
       await allowMusicSubmissionBatch(group.submissions);
       await loadQueue();
-      Alert.alert("Permitido", "O user ja pode continuar este release.");
+      Alert.alert("Allowed", "The user can continue this release.");
     } catch (error) {
       console.log("ALLOW MUSIC BATCH ERROR:", error);
       Alert.alert("Error", "Could not allow this submission.");
@@ -257,7 +257,7 @@ export default function AdminMusicReviewsScreen() {
                       {group.title}
                     </Text>
                     <Text style={styles.groupMeta}>
-                      {releaseLabel(group.submissions.length)} · {approvedCount}/{group.submissions.length} verificadas
+                      {releaseLabel(group.submissions.length)} · {approvedCount}/{group.submissions.length} verified
                     </Text>
                   </View>
                   {contacted ? (
@@ -274,12 +274,12 @@ export default function AdminMusicReviewsScreen() {
                     {submitter ? (
                       <View style={styles.submitterCard}>
                         <View style={styles.submitterHeader}>
-                          <Text style={styles.submitterEyebrow}>Utilizador que enviou</Text>
+                          <Text style={styles.submitterEyebrow}>Submitted by</Text>
                           {submitter.verified ? (
                             <View style={styles.verifiedPill}>
                               <Ionicons name="checkmark" size={10} color="#fff" />
                               <Text style={styles.verifiedPillText}>
-                                Verificado
+                                Verified
                               </Text>
                             </View>
                           ) : (
@@ -292,10 +292,10 @@ export default function AdminMusicReviewsScreen() {
                           {submitter.displayName}
                         </Text>
                         <Text style={styles.submitterMeta} numberOfLines={1}>
-                          {submitter.username ? `@${submitter.username}` : "Sem username"} · {submitter.email || "Sem email"}
+                          {submitter.username ? `@${submitter.username}` : "No username"} · {submitter.email || "No email"}
                         </Text>
                         <Text style={styles.submitterStats}>
-                          {submitter.followersCount} followers · {submitter.tracksCount} songs publicadas · UID {submitter.id}
+                          {submitter.followersCount} followers · {submitter.tracksCount} published songs · UID {submitter.id}
                         </Text>
                       </View>
                     ) : null}
@@ -304,10 +304,10 @@ export default function AdminMusicReviewsScreen() {
                         <Text style={styles.trackIndex}>{index + 1}</Text>
                         <View style={styles.trackInfo}>
                           <Text style={styles.trackTitle} numberOfLines={1}>
-                            {submission.declaredTitle || submission.originalFileName || "Sem titulo"}
+                            {submission.declaredTitle || submission.originalFileName || "Untitled"}
                           </Text>
                           <Text style={styles.trackStatus}>
-                            {submission.status === "approved" ? "Verificada" : "Por verificar"}
+                            {submission.status === "approved" ? "Verified" : "Pending verification"}
                           </Text>
                         </View>
                         <Pressable style={pressableFeedback(styles.iconButton)} onPress={() => handleOpenAudio(submission.audioUrl)}>
@@ -358,7 +358,7 @@ export default function AdminMusicReviewsScreen() {
                         onPress={() => handleAllowGroup(group)}
                         disabled={!allApproved || busyId === group.id}
                       >
-                        <Text style={styles.allowText}>Permitir</Text>
+                        <Text style={styles.allowText}>Allow</Text>
                       </Pressable>
                     </View>
                   </View>

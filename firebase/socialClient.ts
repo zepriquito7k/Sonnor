@@ -1,6 +1,7 @@
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
   getCountFromServer,
   getDoc,
@@ -9,6 +10,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -81,6 +83,27 @@ export async function createLike(
   });
 }
 
+export async function getLikedPostIds(userId?: string | null) {
+  if (!userId) {
+    return new Set<string>();
+  }
+
+  const snapshot = await getDocs(
+    query(
+      collection(db, firestoreCollections.likes),
+      where("userId", "==", userId),
+      where("targetType", "==", "post"),
+      limit(500),
+    ),
+  );
+
+  return new Set(
+    snapshot.docs
+      .map((item) => item.data().targetId)
+      .filter((targetId): targetId is string => typeof targetId === "string"),
+  );
+}
+
 function getLikeId(userId: string, targetType: string, targetId: string) {
   return `${userId}_${targetType}_${targetId}`;
 }
@@ -111,22 +134,39 @@ export async function createFollow(followerId: string, followingId: string) {
   }
 
   const idToken = await getCallableIdToken(followerId);
+  const followId = getFollowId(followerId, followingId);
 
-  return httpsCallable(functions, "setUserFollow")({
-    idToken,
-    follow: true,
-    followingId,
-  });
+  try {
+    return await httpsCallable(functions, "setUserFollow")({
+      idToken,
+      follow: true,
+      followingId,
+    });
+  } catch (error) {
+    console.log("FOLLOW CALLABLE FALLBACK:", error);
+    await setDoc(doc(db, firestoreCollections.follows, followId), {
+      createdAt: serverTimestamp(),
+      followerId,
+      followingId,
+    });
+    return { data: { following: true } };
+  }
 }
 
 export async function removeFollow(followerId: string, followingId: string) {
   const idToken = await getCallableIdToken(followerId);
+  const followId = getFollowId(followerId, followingId);
 
-  await httpsCallable(functions, "setUserFollow")({
-    idToken,
-    follow: false,
-    followingId,
-  });
+  try {
+    await httpsCallable(functions, "setUserFollow")({
+      idToken,
+      follow: false,
+      followingId,
+    });
+  } catch (error) {
+    console.log("UNFOLLOW CALLABLE FALLBACK:", error);
+    await deleteDoc(doc(db, firestoreCollections.follows, followId));
+  }
 }
 
 export async function isFollowingUser(

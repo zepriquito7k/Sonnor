@@ -62,7 +62,7 @@ export default function ForgotPassword() {
       if (err?.code === "functions/failed-precondition") {
         Alert.alert(
           "Error",
-          "The email sender is not configured correctly in Firebase Functions.",
+          "The email service is temporarily unavailable. Please try again later.",
         );
         return;
       }
@@ -85,7 +85,7 @@ export default function ForgotPassword() {
 
       Alert.alert(
         "Error",
-        err?.message ?? "Unable to send the verification code right now.",
+        "Unable to send the verification code right now. Please try again later.",
       );
     } finally {
       setLoading(false);

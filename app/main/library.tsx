@@ -152,7 +152,7 @@ export default function LibraryScreen() {
                 {data.tracks.length === 0 ? (
                   <View style={styles.emptyCard}>
                     <Ionicons name="heart-outline" size={26} color="#9ba4a0" />
-                    <Text style={styles.emptyTitle}>Nenhuma track curtida</Text>
+                    <Text style={styles.emptyTitle}>No liked tracks</Text>
                   </View>
                 ) : (
                   <View style={styles.albumList}>
@@ -229,7 +229,7 @@ export default function LibraryScreen() {
             {data.tracks.length === 0 ? (
               <View style={styles.emptyCard}>
                 <Ionicons name="heart-outline" size={26} color="#9ba4a0" />
-                <Text style={styles.emptyTitle}>Nenhuma track curtida</Text>
+                <Text style={styles.emptyTitle}>No liked tracks</Text>
               </View>
             ) : (
               <View style={styles.albumList}>

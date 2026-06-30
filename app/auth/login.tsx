@@ -87,13 +87,13 @@ export default function LoginScreen() {
         err?.code === "auth/invalid-credential"
       ) {
         Alert.alert(
-          "Login invalido",
-          "Confirma se o email and the password estao iguais aos do Firebase Authentication.",
+          "Invalid login",
+          "Check your email and password, then try again.",
         );
         return;
       }
 
-      Alert.alert("Login error", "Could not entrar right now.");
+      Alert.alert("Login error", "Could not sign in right now.");
     }
   }
 

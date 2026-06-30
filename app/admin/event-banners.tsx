@@ -28,8 +28,86 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 
 function statusLabel(status: EventRequest["status"]) {
   if (status === "approved") return "Approved";
-  if (status === "rejected") return "Recusado";
+  if (status === "rejected") return "Rejected";
   return "Pending";
+}
+
+function readDateMillis(value: unknown) {
+  if (!value) return 0;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return Date.parse(value) || 0;
+  if (typeof value === "object" && "toMillis" in value && typeof value.toMillis === "function") {
+    return value.toMillis();
+  }
+  if (typeof value === "object" && "seconds" in value && typeof value.seconds === "number") {
+    return value.seconds * 1000;
+  }
+  return 0;
+}
+
+function isBannerActive(banner: EventBanner) {
+  return banner.status === "published" && readDateMillis(banner.expiresAt) > Date.now();
+}
+
+function isBannerExpired(banner: EventBanner) {
+  return banner.status === "expired" || (banner.status === "published" && readDateMillis(banner.expiresAt) <= Date.now());
+}
+
+function formatBannerExpiry(banner: EventBanner) {
+  const expiresAt = readDateMillis(banner.expiresAt);
+
+  if (!expiresAt) {
+    return "No expiry date";
+  }
+
+  if (expiresAt <= Date.now()) {
+    return `Expired ${new Intl.DateTimeFormat("en", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }).format(new Date(expiresAt))}`;
+  }
+
+  return `Expires ${new Intl.DateTimeFormat("en", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(expiresAt))}`;
+}
+
+function matchesEventSearch(
+  item: Pick<EventRequest, "id" | "userId" | "title" | "details" | "linkUrl" | "status">,
+  query: string,
+) {
+  const text = query.trim().toLowerCase();
+
+  if (!text) {
+    return true;
+  }
+
+  return [item.id, item.userId, item.title, item.details, item.linkUrl, item.status]
+    .filter((value): value is string => typeof value === "string")
+    .some((value) => value.toLowerCase().includes(text));
+}
+
+function matchesBannerSearch(banner: EventBanner, query: string) {
+  const text = query.trim().toLowerCase();
+
+  if (!text) {
+    return true;
+  }
+
+  return [
+    banner.id,
+    banner.requestId || "",
+    banner.userId || "",
+    banner.title,
+    banner.subtitle || "",
+    banner.linkUrl,
+    banner.visibility || "",
+    banner.status,
+  ].some((value) => value.toLowerCase().includes(text));
 }
 
 export default function EventBannersAdminScreen() {
@@ -39,6 +117,7 @@ export default function EventBannersAdminScreen() {
   const [banners, setBanners] = useState<EventBanner[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
+  const [query, setQuery] = useState("");
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [visibilityByRequest, setVisibilityByRequest] = useState<
     Record<string, "public" | "followers">
@@ -55,7 +134,7 @@ export default function EventBannersAdminScreen() {
       setBanners(nextBanners);
     } catch (error) {
       console.log("LOAD EVENT REQUESTS ERROR:", error);
-      Alert.alert("Error", "Could not carregar os pedidos de eventos.");
+      Alert.alert("Error", "Could not load event requests.");
     } finally {
       setLoading(false);
     }
@@ -68,6 +147,18 @@ export default function EventBannersAdminScreen() {
   const pendingCount = useMemo(
     () => requests.filter((request) => request.status === "pending").length,
     [requests],
+  );
+  const activeBanners = useMemo(
+    () => banners.filter((banner) => isBannerActive(banner) && matchesBannerSearch(banner, query)),
+    [banners, query],
+  );
+  const expiredBanners = useMemo(
+    () => banners.filter((banner) => isBannerExpired(banner) && matchesBannerSearch(banner, query)),
+    [banners, query],
+  );
+  const filteredRequests = useMemo(
+    () => requests.filter((request) => matchesEventSearch(request, query)),
+    [requests, query],
   );
 
   async function handleApprove(request: EventRequest) {
@@ -152,12 +243,22 @@ export default function EventBannersAdminScreen() {
           <Text style={styles.summaryLabel}>pending requests</Text>
         </View>
 
-        {banners.filter((banner) => banner.status === "published").length > 0 ? (
+        <View style={styles.searchBox}>
+          <Ionicons name="search-outline" size={18} color="#777" />
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search banner, request, user, link, or status"
+            placeholderTextColor="#777"
+            style={styles.searchInput}
+            autoCapitalize="none"
+          />
+        </View>
+
+        {activeBanners.length > 0 ? (
           <View style={styles.activeSection}>
             <Text style={styles.sectionTitle}>Active banners</Text>
-            {banners
-              .filter((banner) => banner.status === "published")
-              .map((banner) => (
+            {activeBanners.map((banner) => (
                 <View key={banner.id} style={styles.activeBannerCard}>
                   {banner.mediaType === "video" ? (
                     <View style={[styles.activeBannerImage, styles.videoThumb]}>
@@ -171,7 +272,7 @@ export default function EventBannersAdminScreen() {
                       {banner.title}
                     </Text>
                     <Text style={styles.cardMeta} numberOfLines={1}>
-                      {banner.visibility === "followers" ? "Followers" : "Public"} · expires in 1 week
+                      {banner.visibility === "followers" ? "Followers" : "Public"} · {formatBannerExpiry(banner)}
                     </Text>
                   </View>
                   <Pressable
@@ -185,12 +286,43 @@ export default function EventBannersAdminScreen() {
           </View>
         ) : null}
 
+        {expiredBanners.length > 0 ? (
+          <View style={styles.activeSection}>
+            <Text style={styles.sectionTitle}>Expired banners</Text>
+            {expiredBanners.map((banner) => (
+              <View key={banner.id} style={[styles.activeBannerCard, styles.expiredBannerCard]}>
+                {banner.mediaType === "video" ? (
+                  <View style={[styles.activeBannerImage, styles.videoThumb]}>
+                    <Ionicons name="videocam-outline" size={20} color="#fff" />
+                  </View>
+                ) : (
+                  <Image source={{ uri: banner.imageUrl }} style={styles.activeBannerImage} />
+                )}
+                <View style={styles.activeBannerInfo}>
+                  <Text style={styles.activeBannerTitle} numberOfLines={1}>
+                    {banner.title}
+                  </Text>
+                  <Text style={styles.cardMeta} numberOfLines={1}>
+                    {banner.visibility === "followers" ? "Followers" : "Public"} · {formatBannerExpiry(banner)}
+                  </Text>
+                </View>
+                <Pressable
+                  style={pressableFeedback(styles.removeBannerButton)}
+                  onPress={() => handleRemoveBanner(banner.id)}
+                >
+                  <Ionicons name="trash-outline" size={18} color="#fff" />
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
         {loading ? (
           <ActivityIndicator color="#fff" style={{ marginTop: 30 }} />
-        ) : requests.length === 0 ? (
-          <Text style={styles.emptyText}>There are no event requests yet.</Text>
+        ) : filteredRequests.length === 0 ? (
+          <Text style={styles.emptyText}>No event requests found.</Text>
         ) : (
-          requests.map((request) => {
+          filteredRequests.map((request) => {
             const isPending = request.status === "pending";
             const isBusy = busyId === request.id;
 
@@ -293,7 +425,7 @@ export default function EventBannersAdminScreen() {
                       onChangeText={(value) =>
                         setReasons((current) => ({ ...current, [request.id]: value }))
                       }
-                      placeholder="Mensagem de recusa"
+                      placeholder="Rejection message"
                       placeholderTextColor="#777"
                       style={styles.rejectInput}
                     />
@@ -387,6 +519,23 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginTop: 3,
   },
+  searchBox: {
+    minHeight: 52,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#111",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    marginBottom: 18,
+  },
+  searchInput: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 15,
+  },
   sectionTitle: {
     color: "#fff",
     fontSize: 17,
@@ -407,6 +556,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.09)",
     marginBottom: 8,
+  },
+  expiredBannerCard: {
+    opacity: 0.68,
+    borderColor: "rgba(255,255,255,0.05)",
   },
   activeBannerImage: {
     width: 74,

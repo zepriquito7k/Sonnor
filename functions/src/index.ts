@@ -79,7 +79,7 @@ async function enforceOtpCooldown(
   if (createdAt && Date.now() - createdAt < OTP_RESEND_COOLDOWN_MS) {
     throw new HttpsError(
       "resource-exhausted",
-      "Aguarda um minuto antes de pedir outro codigo.",
+      "Wait one minute before requesting another code.",
     );
   }
 }
@@ -208,7 +208,7 @@ function buildOwnershipContactEmail(submissions: admin.firestore.DocumentData[])
   const first = submissions[0] ?? {};
   const releaseTitle =
     (typeof first.reviewBatchTitle === "string" && first.reviewBatchTitle.trim()) ||
-    readSubmissionTitle(first, "Envio musical");
+    readSubmissionTitle(first, "Music submission");
   const releaseType =
     typeof first.reviewBatchReleaseType === "string"
       ? first.reviewBatchReleaseType.toUpperCase()
@@ -242,9 +242,9 @@ function buildOwnershipContactEmail(submissions: admin.firestore.DocumentData[])
     "",
     "CONFIRMACAO DE TITULARIDADE",
     "",
-    "Olá,",
+    "Hello,",
     "",
-    "Estamos a rever um envio musical na Sonnor e precisamos confirmar alguns detalhes de titularidade antes de permitir a publicação.",
+    "We are reviewing a music submission on Sonnor and need to confirm ownership details before allowing publication.",
     "",
     "ENVIO EM ANALISE",
     "----------------",
@@ -256,15 +256,15 @@ function buildOwnershipContactEmail(submissions: admin.firestore.DocumentData[])
     "-----------------------------",
     textTrackList,
     "",
-    "Para continuar, responde a este email com qualquer prova, contexto ou informação que confirme que tens autorização para publicar este conteúdo na plataforma.",
+    "To continue, reply to this email with any proof, context, or information confirming that you are authorized to publish this content on the platform.",
     "",
     "O QUE PODES ENVIAR",
     "------------------",
-    "- Prova de autoria ou autorização",
-    "- Informação sobre produtores, compositores ou colaboradores",
-    "- Links oficiais ou documentos que ajudem na verificação",
+    "- Proof of authorship or authorization",
+    "- Information about producers, composers, or collaborators",
+    "- Official links or documents that help verification",
     "",
-    "Assim que recebermos a tua resposta, a equipa Sonnor continua a revisão do envio.",
+    "Once we receive your reply, the Sonnor team will continue reviewing the submission.",
     "",
     "Obrigado,",
     "Equipa Sonnor",
@@ -294,14 +294,14 @@ function buildOwnershipContactEmail(submissions: admin.firestore.DocumentData[])
             <img src="cid:${logoCid}" alt="Sonnor" width="104" style="display: block; width: 104px; max-width: 46%; height: auto; border: 0; margin: 0 auto;" />
           </div>
           <div style="padding: 30px 28px;">
-            <p style="margin: 0 0 14px; color: #111; font-size: 18px; font-weight: 800;">Olá,</p>
+            <p style="margin: 0 0 14px; color: #111; font-size: 18px; font-weight: 800;">Hello,</p>
             <p style="margin: 0; color: #444; font-size: 15px; line-height: 1.65;">
-              Estamos a rever um envio musical na Sonnor e precisamos confirmar alguns detalhes de titularidade antes de permitir a publicação.
+              We are reviewing a music submission on Sonnor and need to confirm ownership details before allowing publication.
             </p>
 
             <div style="margin: 26px 0; padding: 18px; border-radius: 22px; background: #f7f7f7; border: 1px solid #ededed;">
               <div style="margin-bottom: 14px; color: #111; font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px;">
-                Envio em análise
+                Submission under review
               </div>
               <div style="margin-bottom: 8px; color: #111; font-size: 15px;"><strong>Pasta/Lancamento:</strong> ${escapeHtml(releaseTitle)}</div>
               <div style="margin-bottom: 8px; color: #111; font-size: 15px;"><strong>Tipo:</strong> ${escapeHtml(releaseType)}</div>
@@ -310,7 +310,7 @@ function buildOwnershipContactEmail(submissions: admin.firestore.DocumentData[])
 
             <div style="margin-bottom: 26px;">
               <div style="margin-bottom: 6px; color: #111; font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px;">
-                Musicas / ficheiros incluídos
+                Music / files included
               </div>
               <table role="presentation" style="width: 100%; border-collapse: collapse;">
                 ${htmlRows}
@@ -318,22 +318,22 @@ function buildOwnershipContactEmail(submissions: admin.firestore.DocumentData[])
             </div>
 
             <p style="margin: 0 0 18px; color: #444; font-size: 15px; line-height: 1.65;">
-              Para continuar, responde a este email com qualquer prova, contexto ou informação que confirme que tens autorização para publicar este conteúdo na plataforma.
+              To continue, reply to this email with any proof, context, or information confirming that you are authorized to publish this content on the platform.
             </p>
 
             <div style="margin: 0 0 26px; padding: 18px; border-radius: 20px; background: #fbfbfb; border: 1px solid #ededed;">
               <div style="margin-bottom: 10px; color: #111; font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px;">
-                O que podes enviar
+                What you can send
               </div>
               <ul style="margin: 0; padding-left: 18px; color: #444; font-size: 15px; line-height: 1.7;">
-                <li>Prova de autoria ou autorização</li>
-                <li>Informação sobre produtores, compositores ou colaboradores</li>
-                <li>Links oficiais ou documentos que ajudem na verificação</li>
+                <li>Proof of authorship or authorization</li>
+                <li>Information about producers, composers, or collaborators</li>
+                <li>Official links or documents that help verification</li>
               </ul>
             </div>
 
             <p style="margin: 0; color: #444; font-size: 15px; line-height: 1.65;">
-              Assim que recebermos a tua resposta, a equipa Sonnor continua a revisão do envio.
+              Once we receive your reply, the Sonnor team will continue reviewing the submission.
             </p>
             <p style="margin: 24px 0 0; color: #111; font-size: 15px; font-weight: 800;">
               Obrigado,<br />Equipa Sonnor
@@ -442,7 +442,7 @@ export const sendOtpEmail = onCall({ secrets: [GMAIL_USER, GMAIL_APP_PASSWORD] }
   const email = normalizeEmail(request.data.email);
 
   if (!email) {
-    throw new HttpsError("invalid-argument", "Email obrigatório.");
+    throw new HttpsError("invalid-argument", "Email is required.");
   }
 
   await ensurePasswordResetUser(email);
@@ -477,14 +477,14 @@ export const verifyOtp = onCall(async (request) => {
   const code = normalizeCode(request.data.code);
 
   if (!email || !code) {
-    throw new HttpsError("invalid-argument", "Dados inválidos.");
+    throw new HttpsError("invalid-argument", "Invalid data.");
   }
 
   const docRef = db.collection("otps").doc(email);
   const snap = await docRef.get();
 
   if (!snap.exists) {
-    throw new HttpsError("not-found", "Código não encontrado.");
+    throw new HttpsError("not-found", "Code not found.");
   }
 
   const data = snap.data() ?? {};
@@ -493,7 +493,7 @@ export const verifyOtp = onCall(async (request) => {
 
   if (!expiresAt || expiresAt < Date.now()) {
     await docRef.delete();
-    throw new HttpsError("deadline-exceeded", "Código expirado.");
+    throw new HttpsError("deadline-exceeded", "Code expired.");
   }
 
   if (attempts >= MAX_OTP_ATTEMPTS) {
@@ -508,7 +508,7 @@ export const verifyOtp = onCall(async (request) => {
       attempts: admin.firestore.FieldValue.increment(1),
     });
 
-    throw new HttpsError("permission-denied", "Código incorreto.");
+    throw new HttpsError("permission-denied", "Incorrect code.");
   }
 
   await docRef.delete();
@@ -607,13 +607,13 @@ export const sendDeleteAccountOtpEmail = onCall(
   const email = normalizeEmail(request.data.email);
 
   if (!uid || !email) {
-    throw new HttpsError("unauthenticated", "Conta autenticada obrigatoria.");
+    throw new HttpsError("unauthenticated", "Authenticated account required.");
   }
 
   const user = await admin.auth().getUser(uid);
 
   if (user.email?.toLowerCase() !== email) {
-    throw new HttpsError("permission-denied", "Email nao pertence a esta conta.");
+    throw new HttpsError("permission-denied", "Email does not belong to this account.");
   }
 
   const otp = generateOtp();
@@ -648,12 +648,12 @@ export const sendSignupOtpEmail = onCall(
   const email = normalizeEmail(request.data.email);
 
   if (!email) {
-    throw new HttpsError("invalid-argument", "Email obrigatorio.");
+    throw new HttpsError("invalid-argument", "Email is required.");
   }
 
   try {
     await admin.auth().getUserByEmail(email);
-    throw new HttpsError("already-exists", "Este email ja tem conta.");
+    throw new HttpsError("already-exists", "This email already has an account.");
   } catch (error: any) {
     if (error instanceof HttpsError) {
       throw error;
@@ -661,7 +661,7 @@ export const sendSignupOtpEmail = onCall(
 
     if (error?.code !== "auth/user-not-found") {
       console.error("CHECK SIGNUP EMAIL ERROR:", error);
-      throw new HttpsError("internal", "Nao foi possivel validar este email.");
+      throw new HttpsError("internal", "Could not validate this email.");
     }
   }
 
@@ -702,7 +702,7 @@ export const verifySignupOtp = onCall({ invoker: "public" }, async (request) => 
   const snap = await docRef.get();
 
   if (!snap.exists) {
-    throw new HttpsError("not-found", "Codigo nao encontrado.");
+    throw new HttpsError("not-found", "Code not found.");
   }
 
   const data = snap.data() ?? {};
@@ -754,7 +754,7 @@ function readRequestBody(request: any) {
 async function createSignupOtp(email: string) {
   try {
     await admin.auth().getUserByEmail(email);
-    throw new HttpsError("already-exists", "Este email ja tem conta.");
+    throw new HttpsError("already-exists", "This email already has an account.");
   } catch (error: any) {
     if (error instanceof HttpsError) {
       throw error;
@@ -762,7 +762,7 @@ async function createSignupOtp(email: string) {
 
     if (error?.code !== "auth/user-not-found") {
       console.error("CHECK SIGNUP EMAIL ERROR:", error);
-      throw new HttpsError("internal", "Nao foi possivel validar este email.");
+      throw new HttpsError("internal", "Could not validate this email.");
     }
   }
 
@@ -793,7 +793,7 @@ async function checkSignupOtp(email: string, code: string) {
   const snap = await docRef.get();
 
   if (!snap.exists) {
-    throw new HttpsError("not-found", "Codigo nao encontrado.");
+    throw new HttpsError("not-found", "Code not found.");
   }
 
   const data = snap.data() ?? {};
@@ -831,7 +831,7 @@ export const sendSignupOtpHttp = onRequest(
     const email = normalizeEmail(readRequestBody(request).email);
 
     if (!email) {
-      sendJson(response, 400, { error: "Email obrigatorio." });
+      sendJson(response, 400, { error: "Email is required." });
       return;
     }
 
@@ -840,7 +840,7 @@ export const sendSignupOtpHttp = onRequest(
       sendJson(response, 200, { success: true });
     } catch (error: any) {
       const code = error instanceof HttpsError ? error.code : "internal";
-      const message = error?.message || "Nao foi possivel enviar o codigo.";
+      const message = error?.message || "Could not send the code.";
 
       sendJson(response, code === "already-exists" ? 409 : 500, {
         code,
@@ -1244,7 +1244,7 @@ async function recalculateUserVerification(uid: string) {
     const updates: Record<string, unknown> = {
       verified: true,
       verifiedBy: "admin",
-      verifiedReason: "Verificado manualmente pela equipa Sonnor.",
+      verifiedReason: "Manually verified by the Sonnor team.",
     };
 
     if (
@@ -1449,14 +1449,14 @@ export const deleteAccountWithOtp = onCall(async (request) => {
   const user = await admin.auth().getUser(uid);
 
   if (user.email?.toLowerCase() !== email) {
-    throw new HttpsError("permission-denied", "Email nao pertence a esta conta.");
+    throw new HttpsError("permission-denied", "Email does not belong to this account.");
   }
 
   const otpRef = db.collection("accountDeletionOtps").doc(uid);
   const otpSnap = await otpRef.get();
 
   if (!otpSnap.exists) {
-    throw new HttpsError("not-found", "Codigo nao encontrado.");
+    throw new HttpsError("not-found", "Code not found.");
   }
 
   const data = otpSnap.data() ?? {};
@@ -1509,7 +1509,7 @@ export const deleteAccountWithOtpHttp = onRequest(
     if (!uid || !email || !code || confirmation !== "apagar") {
       sendJson(response, 401, {
         code: "unauthenticated",
-        error: "Sessao autenticada obrigatoria.",
+        error: "Authenticated session required.",
       });
       return;
     }
@@ -1518,14 +1518,14 @@ export const deleteAccountWithOtpHttp = onRequest(
       const user = await admin.auth().getUser(uid);
 
       if (user.email?.toLowerCase() !== email) {
-        throw new HttpsError("permission-denied", "Email nao pertence a esta conta.");
+        throw new HttpsError("permission-denied", "Email does not belong to this account.");
       }
 
       const otpRef = db.collection("accountDeletionOtps").doc(uid);
       const otpSnap = await otpRef.get();
 
       if (!otpSnap.exists) {
-        throw new HttpsError("not-found", "Codigo nao encontrado.");
+        throw new HttpsError("not-found", "Code not found.");
       }
 
       const data = otpSnap.data() ?? {};
@@ -1554,7 +1554,7 @@ export const deleteAccountWithOtpHttp = onRequest(
       sendJson(response, 200, { success: true });
     } catch (error: any) {
       const codeName = error instanceof HttpsError ? error.code : "internal";
-      const message = error?.message || "Nao foi possivel apagar a conta.";
+      const message = error?.message || "Could not delete the account.";
 
       sendJson(response, codeName === "not-found" ? 404 : 400, {
         code: codeName,
@@ -1570,15 +1570,15 @@ export const adminDeleteUserAccount = onCall(async (request) => {
     typeof request.data.uid === "string" ? request.data.uid.trim() : "";
 
   if (!targetUid) {
-    throw new HttpsError("invalid-argument", "Utilizador obrigatorio.");
+    throw new HttpsError("invalid-argument", "User is required.");
   }
 
   if (!(await isCallableAdmin(request))) {
-    throw new HttpsError("permission-denied", "Permissao admin obrigatoria.");
+    throw new HttpsError("permission-denied", "Admin permission is required.");
   }
 
   if (identity?.uid === targetUid) {
-    throw new HttpsError("failed-precondition", "Um admin nao pode apagar a propria conta aqui.");
+    throw new HttpsError("failed-precondition", "An admin cannot delete their own account here.");
   }
 
   const targetUser = await admin.auth().getUser(targetUid).catch((error) => {
@@ -1600,18 +1600,18 @@ export const setUserVerifiedOverride = onCall(async (request) => {
   const verified = request.data.verified === true;
 
   if (!targetUid) {
-    throw new HttpsError("invalid-argument", "Utilizador obrigatorio.");
+    throw new HttpsError("invalid-argument", "User is required.");
   }
 
   if (!(await isCallableAdmin(request))) {
-    throw new HttpsError("permission-denied", "Permissao admin obrigatoria.");
+    throw new HttpsError("permission-denied", "Admin permission is required.");
   }
 
   await db.collection("users").doc(targetUid).set({
     verificationOverride: verified,
     verified: verified,
     verifiedBy: verified ? "admin" : "",
-    verifiedReason: verified ? "Verificado manualmente pela equipa Sonnor." : "",
+    verifiedReason: verified ? "Manually verified by the Sonnor team." : "",
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 
@@ -1652,7 +1652,7 @@ async function toggleLikeForTarget(
     ]);
 
     if (!targetSnapshot.exists) {
-      throw new HttpsError("not-found", "Conteudo nao encontrado.");
+      throw new HttpsError("not-found", "Content not found.");
     }
 
     const targetData = targetSnapshot.data() ?? {};
@@ -1702,7 +1702,7 @@ export const toggleTrackLikeV2 = onCall(async (request) => {
     typeof request.data.trackId === "string" ? request.data.trackId.trim() : "";
 
   if (!uid) {
-    throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
+    throw new HttpsError("unauthenticated", "Session required.");
   }
 
   return toggleLikeForTarget(uid, "track", targetId);
@@ -1715,7 +1715,7 @@ export const togglePostLikeV2 = onCall(async (request) => {
     typeof request.data.postId === "string" ? request.data.postId.trim() : "";
 
   if (!uid) {
-    throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
+    throw new HttpsError("unauthenticated", "Session required.");
   }
 
   return toggleLikeForTarget(uid, "post", targetId);
@@ -1729,7 +1729,7 @@ export const toggleContentLike = onCall(async (request) => {
   const targetType = request.data.targetType as LikeTargetType;
 
   if (!uid) {
-    throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
+    throw new HttpsError("unauthenticated", "Session required.");
   }
 
   return toggleLikeForTarget(uid, targetType, targetId);
@@ -1745,11 +1745,11 @@ export const setUserFollow = onCall(async (request) => {
   const shouldFollow = request.data.follow === true;
 
   if (!followerId) {
-    throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
+    throw new HttpsError("unauthenticated", "Session required.");
   }
 
   if (!followingId || followingId === followerId) {
-    throw new HttpsError("invalid-argument", "Perfil invalido.");
+    throw new HttpsError("invalid-argument", "Invalid profile.");
   }
 
   const followerUserRef = db.collection("users").doc(followerId);
@@ -1766,7 +1766,7 @@ export const setUserFollow = onCall(async (request) => {
     ]);
 
     if (!followerUser.exists || !followingUser.exists) {
-      throw new HttpsError("not-found", "Perfil nao encontrado.");
+      throw new HttpsError("not-found", "Profile not found.");
     }
 
     if (existingFollow.exists === shouldFollow) {
@@ -1813,7 +1813,7 @@ export const deleteOwnedAlbum = onCall(async (request) => {
   const uid = identity?.uid;
 
   if (!uid) {
-    throw new HttpsError("unauthenticated", "Tens de iniciar sessao.");
+    throw new HttpsError("unauthenticated", "You need to sign in.");
   }
 
   const albumId =
@@ -1828,13 +1828,13 @@ export const deleteOwnedAlbum = onCall(async (request) => {
   const albumSnapshot = await db.collection("albums").doc(albumId).get();
 
   if (!albumSnapshot.exists) {
-    throw new HttpsError("not-found", "Pasta nao encontrada.");
+    throw new HttpsError("not-found", "Folder not found.");
   }
 
   const album = albumSnapshot.data() ?? {};
 
   if (album.userId !== uid) {
-    throw new HttpsError("permission-denied", "So o dono pode apagar esta pasta.");
+    throw new HttpsError("permission-denied", "Only the owner can delete this folder.");
   }
 
   const result = await removeAlbumEverywhere(albumId, uid);
@@ -1872,10 +1872,10 @@ async function publishAlbum(album: FirebaseFirestore.QueryDocumentSnapshot | Fir
 
       if (typeof userId === "string" && userId) {
         await createInAppNotification({
-          body: `${typeof albumData.title === "string" ? albumData.title : "O lançamento"} já está disponível.`,
+          body: `${typeof albumData.title === "string" ? albumData.title : "The release"} is now available.`,
           targetId: album.id,
           targetType: "album",
-          title: "Novo lançamento disponível",
+          title: "New release available",
           type: "new_release",
           userId,
         });
@@ -1924,14 +1924,14 @@ export const publishDueReleasesNow = onCall(async (request) => {
   const identity = await getCallableIdentity(request);
 
   if (!identity?.uid) {
-    throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
+    throw new HttpsError("unauthenticated", "Session required.");
   }
 
   const albumId =
     typeof request.data.albumId === "string" ? request.data.albumId.trim() : "";
 
   if (!albumId) {
-    throw new HttpsError("invalid-argument", "Lancamento obrigatorio.");
+    throw new HttpsError("invalid-argument", "Release is required.");
   }
 
   const album = await db.collection("albums").doc(albumId).get();
@@ -1942,7 +1942,7 @@ export const publishDueReleasesNow = onCall(async (request) => {
   }
 
   if (!releaseDate || releaseDate > Date.now()) {
-    throw new HttpsError("failed-precondition", "O lancamento ainda nao chegou a zero.");
+    throw new HttpsError("failed-precondition", "The release countdown has not reached zero yet.");
   }
 
   await publishAlbum(album);
@@ -1967,11 +1967,11 @@ export const notifyMusicSubmissionDecision = onDocumentWritten(
     const approved = allowedChanged || after.status === "approved";
     await createInAppNotification({
       body: approved
-        ? "A equipa aprovou a música. Já podes terminar os dados do lançamento."
-        : after.rightsReview?.note || "A equipa não aprovou esta música.",
+        ? "The team approved the song. You can finish the release details now."
+        : after.rightsReview?.note || "The team did not approve this song.",
       targetId: event.params.submissionId,
       targetType: "track",
-      title: approved ? "Música aprovada" : "Música não aprovada",
+      title: approved ? "Music approved" : "Music not approved",
       userId: after.userId,
     });
   },
@@ -2029,11 +2029,11 @@ export const notifyVerificationDecision = onDocumentWritten(
 
     await createInAppNotification({
       body: after.status === "approved"
-        ? "A tua verificação foi aprovada."
-        : after.rejectionReason || "A tua verificação não foi aprovada.",
+        ? "Your verification was approved."
+        : after.rejectionReason || "Your verification was not approved.",
       targetId: after.userId,
       targetType: "user",
-      title: after.status === "approved" ? "Verificação aprovada" : "Atualização da verificação",
+      title: after.status === "approved" ? "Verification approved" : "Verification update",
       userId: after.userId,
     });
   },
@@ -2050,10 +2050,10 @@ export const notifyProfileRequestDecision = onDocumentWritten(
     await createInAppNotification({
       body: after.status === "approved"
         ? "O teu pedido foi aprovado pela equipa."
-        : after.rejectionReason || "O teu pedido não foi aprovado.",
+        : after.rejectionReason || "Your request was not approved.",
       targetId: typeof after.targetId === "string" ? after.targetId : after.userId,
       targetType: "user",
-      title: after.status === "approved" ? "Pedido aprovado" : "Atualização do teu pedido",
+      title: after.status === "approved" ? "Request approved" : "Request update",
       userId: after.userId,
     });
   },
@@ -2127,7 +2127,7 @@ export const processAdminDeletionRequest = onDocumentCreated(
 
     if (!targetUid || !requestedBy || (targetUid === requestedBy && !selfDelete)) {
       await snapshot.ref.update({
-        error: "Pedido invalido.",
+        error: "Invalid request.",
         status: "failed",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -2146,7 +2146,7 @@ export const processAdminDeletionRequest = onDocumentCreated(
 
     if (!isAdminUser) {
       await snapshot.ref.update({
-        error: "Permissao admin obrigatoria.",
+        error: "Admin permission is required.",
         status: "failed",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });

@@ -35,7 +35,7 @@ export default function ManageUsersScreen() {
       setUsers(await listAdminUserProfiles());
     } catch (error) {
       console.log("LOAD ADMIN USERS ERROR:", error);
-      Alert.alert("Error", "Could not carregar users.");
+      Alert.alert("Error", "Could not load users.");
     } finally {
       setLoading(false);
     }
@@ -84,7 +84,7 @@ export default function ManageUsersScreen() {
       setDeletingId(uid);
       await adminDeleteUser(uid);
       setUsers((current) => current.filter((item) => item.id !== uid));
-      Alert.alert("Apagado", "O user e os dados ligados foram removidos.");
+      Alert.alert("Deleted", "The user and linked data were removed.");
     } catch (error) {
       console.log("ADMIN DELETE USER ERROR:", error);
       const code = (error as { code?: string })?.code;
@@ -96,11 +96,11 @@ export default function ManageUsersScreen() {
       }
 
       if (code === "functions/not-found") {
-        Alert.alert("Missing function", "The adminDeleteUserAccount function is not published in Firebase yet.");
+        Alert.alert("Unavailable", "This admin action is not available right now.");
         return;
       }
 
-      Alert.alert("Error", message || "Could not delete this user.");
+      Alert.alert("Error", message && !message.toLowerCase().includes("firebase") ? message : "Could not delete this user.");
     } finally {
       setDeletingId("");
     }
@@ -133,7 +133,7 @@ export default function ManageUsersScreen() {
         return;
       }
 
-      Alert.alert("Error", "Could not alterar o verificado.");
+      Alert.alert("Error", "Could not update verification.");
     } finally {
       setVerifyingId("");
     }
@@ -145,7 +145,7 @@ export default function ManageUsersScreen() {
         <View style={styles.header}>
           <View>
             <Text style={styles.eyebrow}>Admin</Text>
-            <Text style={styles.title}>Utilizadores</Text>
+            <Text style={styles.title}>Users</Text>
           </View>
           <Pressable style={pressableFeedback(styles.refreshButton)} onPress={loadUsers}>
             <Ionicons name="refresh-outline" size={19} color="#fff" />
@@ -157,7 +157,7 @@ export default function ManageUsersScreen() {
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Search name, email ou uid"
+            placeholder="Search name, email, or UID"
             placeholderTextColor="#777"
             style={styles.searchInput}
             autoCapitalize="none"
@@ -185,7 +185,7 @@ export default function ManageUsersScreen() {
                     <Ionicons name="checkmark" size={9} color="#fff" />
                   </View>
                   <Text style={styles.verifiedText}>
-                    {item.verifiedBy === "admin" ? "Verificado Sonnor" : "Verificado automatico"}
+                    {item.verifiedBy === "admin" ? "Sonnor verified" : "Automatically verified"}
                   </Text>
                 </View>
               ) : null}
@@ -212,7 +212,7 @@ export default function ManageUsersScreen() {
                     ? "..."
                     : item.verificationOverride
                       ? "Remove"
-                      : "Verificar"}
+                      : "Verify"}
                 </Text>
               </Pressable>
               <Pressable
@@ -231,7 +231,7 @@ export default function ManageUsersScreen() {
 
         {!loading && filteredUsers.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>Nenhum user encontrado.</Text>
+            <Text style={styles.emptyText}>No users found.</Text>
           </View>
         ) : null}
       </ScrollView>

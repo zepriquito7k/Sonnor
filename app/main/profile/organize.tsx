@@ -234,7 +234,7 @@ export default function OrganizeProfileScreen() {
               showSuccess({});
             } catch (error) {
               console.log("DELETE ORGANIZE ALBUM ERROR:", error);
-              Alert.alert("Error", "Could not deletar a folder right now.");
+              Alert.alert("Error", "Could not delete the folder right now.");
             } finally {
               setSaving(false);
             }

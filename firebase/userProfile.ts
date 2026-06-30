@@ -125,3 +125,61 @@ export async function updateUserProfile(
   }, { merge: true });
   clearContentCache();
 }
+
+export async function saveOnboardingUserProfile(
+  user: User,
+  values: {
+    username: string;
+    displayName: string;
+    bio: string;
+    avatarUrl: string;
+    avatarFallbackColor: string;
+    bannerUrl: string;
+    country: string;
+    city: string;
+    birthDate: string;
+    interests: string[];
+    profileHiddenFields: string[];
+  },
+) {
+  const userRef = doc(db, firestorePaths.user(user.uid));
+  const snapshot = await getDoc(userRef);
+
+  if (snapshot.exists()) {
+    const { avatarFallbackColor: _avatarFallbackColor, ...editableValues } = values;
+
+    await setDoc(userRef, {
+      ...editableValues,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    clearContentCache();
+    return;
+  }
+
+  await setDoc(userRef, {
+    uid: user.uid,
+    email: user.email ?? "",
+    ...values,
+    backgroundUrl: "",
+    spotifyUrl: "",
+    shopUrl: "",
+    merchLogoUrl: "",
+    merchName: "",
+    merchProducts: [],
+    merchGallery: [],
+    verificationOverride: false,
+    verifiedBy: "",
+    verifiedReason: "",
+    verified: false,
+    creatorEnabled: true,
+    followersCount: 0,
+    followingCount: 0,
+    tracksCount: 0,
+    albumsCount: 0,
+    postsCount: 0,
+    likesCount: 0,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  clearContentCache();
+}

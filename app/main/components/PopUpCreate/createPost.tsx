@@ -44,6 +44,7 @@ import { createPost, updatePostMedia } from "../../../../firebase/contentMutatio
 import { uploadUriToStorage } from "../../../../firebase/storageClient";
 import { useCurrentUser } from "../../../../hooks/useCurrentUser";
 import ClipRangeSelector from "../../../../components/ClipRangeSelector";
+import MarqueeText from "../../../../components/MarqueeText";
 import { useSuccessFeedback } from "../../../../components/SuccessFeedback";
 
 const MAX_CHARS = 180;
@@ -199,6 +200,7 @@ export default function CreatePostScreen() {
   } | null>(null);
   const [readySongs, setReadySongs] = useState<ReadySong[]>(READY_SONGS);
   const [profileDisplayName, setProfileDisplayName] = useState("Profile");
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState("");
   const [captionHasWrap, setCaptionHasWrap] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -245,6 +247,11 @@ export default function CreatePostScreen() {
             currentProfile?.username ||
             user?.displayName ||
             "Profile",
+        );
+        setProfileAvatarUrl(
+          typeof currentProfile?.avatarUrl === "string"
+            ? currentProfile.avatarUrl
+            : user?.photoURL || "",
         );
 
         setReadySongs(
@@ -304,7 +311,7 @@ export default function CreatePostScreen() {
     return () => {
       active = false;
     };
-  }, [user?.displayName]);
+  }, [user?.displayName, user?.photoURL]);
 
   useEffect(() => {
     if (baseType === "video") {
@@ -1017,7 +1024,7 @@ export default function CreatePostScreen() {
     const currentUser = auth.currentUser;
 
     if (!currentUser?.uid) {
-      Alert.alert("Sessao em falta", "Faz login outra vez para publicar.");
+      Alert.alert("Missing session", "Sign in again to publish.");
       return;
     }
 
@@ -1078,6 +1085,11 @@ export default function CreatePostScreen() {
         mediaStageWidth: Math.max(previewSize.width, 1),
         mediaStageHeight: Math.max(previewSize.height, 1),
         overlayMedia: uploadedOverlays,
+        linkedTrackId: selectedSong?.id ?? "",
+        linkedTrackShortVideoUrl: selectedSong?.shortVideoUrl ?? "",
+        linkedTrackClipStartSeconds: selectedSong ? songClipStartSeconds : 0,
+        linkedTrackClipEndSeconds: selectedSong ? songClipEndSeconds : 0,
+        linkedAlbumId: "",
       });
 
       showSuccess({
@@ -1087,7 +1099,7 @@ export default function CreatePostScreen() {
     } catch (error) {
       hideFeedback();
       console.log("CREATE POST ERROR:", error);
-      Alert.alert("Error", "Could not publicar o post right now.");
+      Alert.alert("Error", "Could not publish the post right now.");
     } finally {
       setPublishing(false);
     }
@@ -1202,10 +1214,17 @@ export default function CreatePostScreen() {
             <TouchableOpacity
               onPress={openSongMenu}
               activeOpacity={0.88}
+              style={styles.musicInsideButton}
             >
-              <Text style={styles.musicTitle}>
-                {selectedSong ? selectedSong.title : "Choose music"}
-              </Text>
+              {selectedSong && selectedSong.title.length > 14 ? (
+                <MarqueeText style={styles.musicTitle}>
+                  {selectedSong.title}
+                </MarqueeText>
+              ) : (
+                <Text style={styles.musicTitle} numberOfLines={1}>
+                  {selectedSong ? selectedSong.title : "Choose music"}
+                </Text>
+              )}
               <Text style={styles.musicSubtitle}>
                 {selectedSong
                   ? [selectedSong.artist, selectedSong.release]
@@ -1289,9 +1308,17 @@ export default function CreatePostScreen() {
               onPress={() => setTyping(true)}
               activeOpacity={0.9}
             >
-              <View style={[styles.avatar, styles.avatarFallback]}>
-                <Ionicons name="person-outline" size={20} color="#fff" />
-              </View>
+              {profileAvatarUrl.trim().length > 0 ? (
+                <Image
+                  source={{ uri: profileAvatarUrl }}
+                  style={styles.avatar}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={[styles.avatar, styles.avatarFallback]}>
+                  <Ionicons name="person-outline" size={20} color="#fff" />
+                </View>
+              )}
               <View style={{ flex: 1 }}>
                 <Text style={styles.username}>
                   {profileDisplayName}
@@ -1716,10 +1743,17 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 16,
   },
+  musicInsideButton: {
+    alignItems: "center",
+    maxWidth: "100%",
+    minWidth: 0,
+    width: "100%",
+  },
   musicTitle: {
     color: "#f3f3f3",
     fontSize: 15,
     fontWeight: "700",
+    textAlign: "center",
   },
   musicSubtitle: {
     color: "#d8d8d8",

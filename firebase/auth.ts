@@ -141,10 +141,12 @@ export async function deleteAccountWithCode(input: {
 }) {
   const user = await waitForSignedInUser();
   const idToken = await user.getIdToken(true);
+  const normalizedConfirmation = input.confirmation.trim().toLowerCase();
   const payload = {
     email: normalizeEmail(input.email),
     code: input.code.trim(),
-    confirmation: input.confirmation.trim(),
+    confirmation:
+      normalizedConfirmation === "delete" ? "apagar" : normalizedConfirmation,
     idToken,
   };
   const deleteAccountWithOtp = httpsCallable<
