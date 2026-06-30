@@ -4,6 +4,7 @@ import {
   getDoc,
   getDocs,
   limit,
+  orderBy,
   query,
   type QueryConstraint,
   where,
@@ -14,8 +15,11 @@ import { db } from "./dataClient";
 import { defaultAppContent } from "./defaultContent";
 import { functions } from "./config";
 import { firestoreCollections } from "./paths";
+import { getCallableIdToken } from "./socialClient";
 import type {
   AlbumDocument,
+  EventBannerDocument,
+  LikeDocument,
   PostDocument,
   RecentPlayDocument,
   TrackDocument,
@@ -23,6 +27,92 @@ import type {
 } from "./schema";
 
 type WithId<T> = T & { id: string };
+
+type CacheEntry = {
+  expiresAt: number;
+  promise?: Promise<unknown>;
+  value?: unknown;
+};
+
+const requestCache = new Map<string, CacheEntry>();
+const CONTENT_CACHE_TTL_MS = 30_000;
+const DOCUMENT_CACHE_TTL_MS = 60_000;
+
+export async function publishDueReleasesAndRefreshCache(albumId: string) {
+  const idToken = await getCallableIdToken();
+
+  await httpsCallable(functions, "publishDueReleasesNow")({ albumId, idToken });
+  requestCache.clear();
+}
+
+export function clearContentCache() {
+  requestCache.clear();
+}
+
+export async function getReportableUsers(searchText = "") {
+  const users = await readCollectionWithFallback<UserDocument>(
+    firestoreCollections.users,
+    [],
+    {
+      limitCount: 240,
+      orderField: "updatedAt",
+    },
+  );
+  const queryText = searchText.trim().toLowerCase();
+
+  return users.filter((item) => {
+    if (!queryText) {
+      return true;
+    }
+
+    return `${item.displayName} ${item.username}`
+      .toLowerCase()
+      .includes(queryText);
+  });
+}
+
+async function withRequestCache<T>(
+  key: string,
+  loader: () => Promise<T>,
+  ttlMs = CONTENT_CACHE_TTL_MS,
+): Promise<T> {
+  const now = Date.now();
+  const cached = requestCache.get(key);
+
+  if (cached?.value !== undefined && cached.expiresAt > now) {
+    return cached.value as T;
+  }
+
+  if (cached?.promise) {
+    return cached.promise as Promise<T>;
+  }
+
+  const promise = loader()
+    .then((value) => {
+      requestCache.set(key, { expiresAt: Date.now() + ttlMs, value });
+      return value;
+    })
+    .catch((error) => {
+      requestCache.delete(key);
+      throw error;
+    });
+
+  requestCache.set(key, { expiresAt: now + ttlMs, promise });
+  return promise;
+}
+
+async function readDocumentWithCache<T>(collectionName: string, id: string) {
+  return withRequestCache(
+    `document:${collectionName}:${id}`,
+    async () => {
+      const snapshot = await getDoc(doc(db, collectionName, id));
+      return snapshot.exists()
+        ? ({ id: snapshot.id, ...(snapshot.data() as T) } as WithId<T>)
+        : null;
+    },
+    DOCUMENT_CACHE_TTL_MS,
+  );
+}
 
 function getSortableTime(value: unknown) {
   if (value instanceof Date) {
@@ -53,56 +143,77 @@ async function readCollectionWithFallback<T>(
     limitCount?: number;
     orderField?: string;
     ownerId?: string;
+    ownerField?: string;
     publishedOnly?: boolean;
     status?: string;
   } = {},
 ): Promise<WithId<T>[]> {
-  try {
-    const constraints: QueryConstraint[] = [];
+  const cacheKey = `collection:${collectionName}:${JSON.stringify(options)}`;
 
-    if (options.publishedOnly || options.status) {
-      constraints.push(where("status", "==", options.status ?? "published"));
-    }
+  return withRequestCache(cacheKey, async () => {
+    try {
+      const constraints: QueryConstraint[] = [];
 
-    if (options.ownerId) {
-      constraints.push(where("userId", "==", options.ownerId));
-    }
+      if (options.publishedOnly || options.status) {
+        constraints.push(where("status", "==", options.status ?? "published"));
+      }
 
-    const snapshot = await getDocs(
-      query(collection(db, collectionName), ...constraints),
-    );
+      if (options.ownerId) {
+        constraints.push(where(options.ownerField ?? "userId", "==", options.ownerId));
+      }
 
-    if (snapshot.empty) {
+      let snapshot;
+
+      if (options.limitCount) {
+        try {
+          const optimizedConstraints = [...constraints];
+
+          if (options.orderField) {
+            optimizedConstraints.push(orderBy(options.orderField, "desc"));
+          }
+          optimizedConstraints.push(limit(options.limitCount));
+          snapshot = await getDocs(
+            query(collection(db, collectionName), ...optimizedConstraints),
+          );
+        } catch {
+          snapshot = await getDocs(
+            query(collection(db, collectionName), ...constraints),
+          );
+        }
+      } else {
+        snapshot = await getDocs(
+          query(collection(db, collectionName), ...constraints),
+        );
+      }
+
+      if (snapshot.empty) {
+        return fallback;
+      }
+
+      const docs = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...(doc.data() as T),
+      }));
+
+      const sortedDocs = options.orderField
+        ? [...docs].sort(
+            (left, right) =>
+              getSortableTime(right[options.orderField as keyof typeof right]) -
+              getSortableTime(left[options.orderField as keyof typeof left]),
+          )
+        : docs;
+
+      return options.limitCount
+        ? sortedDocs.slice(0, options.limitCount)
+        : sortedDocs;
+    } catch (error) {
+      console.log(`FIREBASE FALLBACK ${collectionName}:`, error);
       return fallback;
     }
-
-    const docs = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...(doc.data() as T),
-    }));
-
-    const sortedDocs = options.orderField
-      ? [...docs].sort(
-          (left, right) =>
-            getSortableTime(right[options.orderField as keyof typeof right]) -
-            getSortableTime(left[options.orderField as keyof typeof left]),
-        )
-      : docs;
-
-    return options.limitCount
-      ? sortedDocs.slice(0, options.limitCount)
-      : sortedDocs;
-  } catch (error) {
-    console.log(`FIREBASE FALLBACK ${collectionName}:`, error);
-    return fallback;
-  }
+  });
 }
 
 export async function getHomeContent(userId?: string | null) {
-  if (userId) {
-    await httpsCallable(functions, "publishDueReleasesNow")({}).catch(() => null);
-  }
-
   const [
     baseTracks,
     albums,
@@ -111,22 +222,22 @@ export async function getHomeContent(userId?: string | null) {
     recentPlays,
     follows,
     publicConfig,
+    eventBanners,
     scheduledPreReleases,
-    publishedPreReleases,
   ] = await Promise.all([
     readCollectionWithFallback<TrackDocument>(
       firestoreCollections.tracks,
       [],
       { limitCount: 12, orderField: "updatedAt", publishedOnly: true },
     ),
-    readCollectionWithFallback(
+    readCollectionWithFallback<AlbumDocument>(
       firestoreCollections.albums,
-      defaultAppContent.releases,
+      [],
       { limitCount: 12, orderField: "updatedAt", publishedOnly: true },
     ),
-    readCollectionWithFallback(
+    readCollectionWithFallback<PostDocument>(
       firestoreCollections.posts,
-      defaultAppContent.posts,
+      [],
       { limitCount: 18, orderField: "createdAt", publishedOnly: true },
     ),
     readCollectionWithFallback<UserDocument>(firestoreCollections.users, [], {
@@ -151,10 +262,20 @@ export async function getHomeContent(userId?: string | null) {
           {
             limitCount: 80,
             orderField: "createdAt",
+            ownerField: "followerId",
+            ownerId: userId,
           },
         )
       : Promise.resolve([]),
-    getDoc(doc(db, firestoreCollections.appConfig, "public")).catch(() => null),
+    readDocumentWithCache<Record<string, unknown>>(
+      firestoreCollections.appConfig,
+      "public",
+    ).catch(() => null),
+    readCollectionWithFallback<EventBannerDocument>(
+      firestoreCollections.eventBanners,
+      [],
+      { limitCount: 12, orderField: "createdAt", status: "published" },
+    ),
     readCollectionWithFallback<AlbumDocument>(
       firestoreCollections.albums,
       [],
@@ -166,17 +287,8 @@ export async function getHomeContent(userId?: string | null) {
           item.preReleaseEnabled === true,
       ),
     ),
-    readCollectionWithFallback<AlbumDocument>(
-      firestoreCollections.albums,
-      [],
-      { limitCount: 20, orderField: "updatedAt", status: "published" },
-    ).then((items) =>
-      items.filter(
-        (item) =>
-          getSortableTime(item.preReleaseHighlightUntil) > Date.now(),
-      ),
-    ),
   ]);
+  const now = Date.now();
   const trackMap = new Map(baseTracks.map((track) => [track.id, track]));
   const linkedTrackIds = posts
     .map((post) =>
@@ -188,12 +300,13 @@ export async function getHomeContent(userId?: string | null) {
 
   await Promise.all(
     linkedTrackIds.map(async (trackId) => {
-      const snapshot = await getDoc(doc(db, firestoreCollections.tracks, trackId));
+      const track = await readDocumentWithCache<TrackDocument>(
+        firestoreCollections.tracks,
+        trackId,
+      );
 
-      if (snapshot.exists()) {
-        const data = snapshot.data() as TrackDocument;
-
-        trackMap.set(trackId, { ...data, id: snapshot.id });
+      if (track) {
+        trackMap.set(trackId, track);
       }
     }),
   );
@@ -203,7 +316,18 @@ export async function getHomeContent(userId?: string | null) {
       .filter((follow) => follow.followerId === userId)
       .map((follow) => follow.followingId),
   );
-  const visiblePreReleases = [...scheduledPreReleases, ...publishedPreReleases].filter(
+  const activeEventBanners = eventBanners.filter((banner) => {
+    if (banner.status !== "published" || getSortableTime(banner.expiresAt) <= now) {
+      return false;
+    }
+
+    if (banner.visibility !== "followers") {
+      return true;
+    }
+
+    return Boolean(userId) && (banner.userId === userId || followedIds.has(banner.userId || ""));
+  });
+  const visiblePreReleases = scheduledPreReleases.filter(
     (release) =>
       Boolean(userId) &&
       (release.userId === userId || followedIds.has(release.userId)),
@@ -216,9 +340,10 @@ export async function getHomeContent(userId?: string | null) {
     users,
     recentPlays,
     follows: follows.filter((follow) => follow.followerId === userId),
-    publicConfig: publicConfig?.exists() ? publicConfig.data() : null,
+    publicConfig,
+    eventBanners: activeEventBanners,
     upcomingReleases: visiblePreReleases,
-    boxes: defaultAppContent.homeBoxes,
+    boxes: [],
   };
 }
 
@@ -229,7 +354,7 @@ export async function getRecommendedTracks(
   const tracks = await readCollectionWithFallback<TrackDocument>(
     firestoreCollections.tracks,
     [],
-    { publishedOnly: true },
+    { limitCount: 60, orderField: "updatedAt", publishedOnly: true },
   );
   const excluded = new Set(excludedIds);
   const available = tracks.filter(
@@ -254,11 +379,13 @@ export async function getRecommendedTracks(
   const artistIds = Array.from(new Set(recommendations.map((track) => track.userId).filter(Boolean)));
   const artistEntries = await Promise.all(
     artistIds.map(async (artistId) => {
-      const snapshot = await getDoc(doc(db, firestoreCollections.users, artistId)).catch(() => null);
-      const data = snapshot?.exists() ? snapshot.data() as UserDocument : null;
+      const data = await readDocumentWithCache<UserDocument>(
+        firestoreCollections.users,
+        artistId,
+      ).catch(() => null);
       return [
         artistId,
-        data?.displayName || data?.username || "Artista",
+        data?.displayName || data?.username || "Artist",
       ] as const;
     }),
   );
@@ -266,42 +393,44 @@ export async function getRecommendedTracks(
 
   return recommendations.map((track) => ({
     ...track,
-    artistName: artistById.get(track.userId) || "Artista",
+    artistName: artistById.get(track.userId) || "Artist",
   }));
 }
 
 export async function getAlbumContent(albumId: string) {
-  const albumSnapshot = await getDoc(doc(db, firestoreCollections.albums, albumId));
+  const cachedAlbum = await readDocumentWithCache<AlbumDocument>(
+    firestoreCollections.albums,
+    albumId,
+  );
 
-  if (!albumSnapshot.exists()) {
+  if (!cachedAlbum) {
     return null;
   }
 
-  const album = { ...(albumSnapshot.data() as AlbumDocument), id: albumSnapshot.id };
+  const album = cachedAlbum;
   const trackIds = Array.isArray(album.trackIds) ? album.trackIds : [];
-  const tracksByAlbum = await getDocs(
-    query(collection(db, firestoreCollections.tracks), where("albumId", "==", albumId)),
+  const tracksByAlbum = await readCollectionWithFallback<TrackDocument>(
+    firestoreCollections.tracks,
+    [],
+    { ownerField: "albumId", ownerId: albumId },
   );
   const trackMap = new Map<string, WithId<TrackDocument>>();
 
-  tracksByAlbum.docs.forEach((trackDoc) => {
-    trackMap.set(trackDoc.id, {
-      ...(trackDoc.data() as TrackDocument),
-      id: trackDoc.id,
-    });
+  tracksByAlbum.forEach((trackDoc) => {
+    trackMap.set(trackDoc.id, trackDoc);
   });
 
   await Promise.all(
     trackIds
       .filter((trackId) => !trackMap.has(trackId))
       .map(async (trackId) => {
-        const trackSnapshot = await getDoc(doc(db, firestoreCollections.tracks, trackId));
+        const track = await readDocumentWithCache<TrackDocument>(
+          firestoreCollections.tracks,
+          trackId,
+        );
 
-        if (trackSnapshot.exists()) {
-          trackMap.set(trackId, {
-            ...(trackSnapshot.data() as TrackDocument),
-            id: trackSnapshot.id,
-          });
+        if (track) {
+          trackMap.set(trackId, track);
         }
       }),
   );
@@ -309,43 +438,84 @@ export async function getAlbumContent(albumId: string) {
   const tracks = trackIds.length
     ? trackIds.map((trackId) => trackMap.get(trackId)).filter(Boolean)
     : Array.from(trackMap.values());
-  const userSnapshot = album.userId
-    ? await getDoc(doc(db, firestoreCollections.users, album.userId))
+  const user = album.userId
+    ? await readDocumentWithCache<UserDocument>(firestoreCollections.users, album.userId)
     : null;
 
   return {
     album,
     tracks: tracks as WithId<TrackDocument>[],
-    user: userSnapshot?.exists()
-      ? ({ ...(userSnapshot.data() as UserDocument), id: userSnapshot.id } as WithId<UserDocument>)
-      : null,
+    user,
   };
 }
 
-export async function getSearchableUsers() {
-  try {
-    const snapshot = await getDocs(
-      query(collection(db, firestoreCollections.users), limit(50)),
-    );
+export async function getTrackContext(trackId: string, albumId?: string) {
+  const track = await readDocumentWithCache<TrackDocument>(
+    firestoreCollections.tracks,
+    trackId,
+  );
+  const resolvedAlbumId = albumId || track?.albumId;
+  const album = resolvedAlbumId
+    ? await readDocumentWithCache<AlbumDocument>(
+        firestoreCollections.albums,
+        resolvedAlbumId,
+      )
+    : null;
+  const artistId = track?.userId || album?.userId;
+  const artist = artistId
+    ? await readDocumentWithCache<UserDocument>(
+        firestoreCollections.users,
+        artistId,
+      )
+    : null;
+  const collaboratorIds = Array.isArray(track?.featUserIds)
+    ? track.featUserIds.filter(Boolean)
+    : [];
+  const collaborators = collaboratorIds.length
+    ? (
+        await Promise.all(
+          collaboratorIds.map((userId) =>
+            readDocumentWithCache<UserDocument>(
+              firestoreCollections.users,
+              userId,
+            ).catch(() => null),
+          ),
+        )
+      ).filter((item): item is WithId<UserDocument> => Boolean(item))
+    : [];
 
-    if (snapshot.empty) {
-      return [];
-    }
+  return { album, artist, collaborators, track };
+}
 
-    return snapshot.docs.map((item) => ({
-      id: item.id,
-      ...(item.data() as UserDocument),
-    }));
-  } catch (error) {
-    console.log("FIREBASE FALLBACK users:", error);
-    return [];
+export async function canPlayAlbumTrack(albumId?: string) {
+  if (!albumId) {
+    return true;
   }
+
+  const album = await readDocumentWithCache<AlbumDocument>(
+    firestoreCollections.albums,
+    albumId,
+  );
+
+  if (!album || album.status !== "scheduled") {
+    return true;
+  }
+
+  return getSortableTime(album.releaseDate) <= Date.now();
+}
+
+export async function getSearchableUsers() {
+  return readCollectionWithFallback<UserDocument>(
+    firestoreCollections.users,
+    [],
+    { limitCount: 50 },
+  );
 }
 
 export async function getLibraryContent(userId?: string | null) {
   if (!userId) {
     return {
-      sections: defaultAppContent.librarySections,
+      sections: [],
       tracks: [] as WithId<TrackDocument>[],
       albums: [] as WithId<AlbumDocument>[],
       posts: [] as WithId<PostDocument>[],
@@ -354,14 +524,14 @@ export async function getLibraryContent(userId?: string | null) {
     };
   }
 
-  const [recentPlays, playlists, userSnapshot] = await Promise.all([
+  const [recentPlays, playlists, userSnapshot, likedTrackRefs] = await Promise.all([
     readCollectionWithFallback<{ trackId?: string }>(
       firestoreCollections.recentPlays,
       [],
       {
-      limitCount: 20,
-      orderField: "createdAt",
-      ownerId: userId,
+        limitCount: 20,
+        orderField: "createdAt",
+        ownerId: userId,
       },
     ),
     readCollectionWithFallback(firestoreCollections.playlists, [], {
@@ -369,9 +539,20 @@ export async function getLibraryContent(userId?: string | null) {
       orderField: "updatedAt",
       ownerId: userId,
     }),
-    getDoc(doc(db, firestoreCollections.users, userId)),
+    readDocumentWithCache<UserDocument>(firestoreCollections.users, userId),
+    readCollectionWithFallback<LikeDocument>(
+      firestoreCollections.likes,
+      [],
+      {
+        limitCount: 80,
+        orderField: "createdAt",
+        ownerId: userId,
+      },
+    ),
   ]);
-  const userData = userSnapshot.exists() ? userSnapshot.data() : {};
+  const userData = (userSnapshot ?? {}) as UserDocument & {
+    settings?: Record<string, unknown>;
+  };
   const settings =
     userData.settings && typeof userData.settings === "object"
       ? (userData.settings as Record<string, unknown>)
@@ -386,64 +567,51 @@ export async function getLibraryContent(userId?: string | null) {
   const savedAlbums = (
     await Promise.all(
       savedAlbumIds.map(async (albumId) => {
-        const snapshot = await getDoc(doc(db, firestoreCollections.albums, albumId));
-        return snapshot.exists()
-          ? ({ ...(snapshot.data() as AlbumDocument), id: snapshot.id } as WithId<AlbumDocument>)
-          : null;
+        return readDocumentWithCache<AlbumDocument>(
+          firestoreCollections.albums,
+          albumId,
+        );
       }),
     )
   ).filter((item): item is WithId<AlbumDocument> => Boolean(item));
-  const recentPlayItems = await Promise.all(
-    recentPlays.slice(0, 10).map(async (play) => {
-      const trackId =
-        "trackId" in play && typeof play.trackId === "string"
-          ? play.trackId
-          : "";
+  const likedTrackIds = likedTrackRefs
+    .filter((like) => like.targetType === "track" && typeof like.targetId === "string")
+    .map((like) => like.targetId);
+  const likedTracks = (
+    await Promise.all(
+      Array.from(new Set(likedTrackIds)).map(async (trackId) =>
+        readDocumentWithCache<TrackDocument>(
+          firestoreCollections.tracks,
+          trackId,
+        ),
+      ),
+    )
+  ).filter((item): item is WithId<TrackDocument> => Boolean(item));
+  const likedArtistIds = Array.from(
+    new Set(likedTracks.map((track) => track.userId).filter(Boolean)),
+  );
+  const likedArtistEntries = await Promise.all(
+    likedArtistIds.map(async (artistId) => {
+      const artistProfile = await readDocumentWithCache<UserDocument>(
+        firestoreCollections.users,
+        artistId,
+      ).catch(() => null);
 
-      if (!trackId) {
-        return null;
-      }
-
-      try {
-        const trackSnapshot = await getDoc(
-          doc(db, firestoreCollections.tracks, trackId),
-        );
-
-        if (!trackSnapshot.exists()) {
-          return trackId;
-        }
-
-        const track = trackSnapshot.data();
-        const title =
-          "title" in track && typeof track.title === "string"
-            ? track.title
-            : trackId;
-
-        return title;
-      } catch (error) {
-        console.log("FIREBASE RECENT TRACK FALLBACK:", error);
-        return trackId;
-      }
+      return [
+        artistId,
+        artistProfile?.displayName || artistProfile?.username || "Artist",
+      ] as const;
     }),
   );
-  const historyItems = recentPlayItems.filter(
-    (item: string | null): item is string =>
-      typeof item === "string" && item.length > 0,
-  );
+  const likedArtistById = new Map(likedArtistEntries);
+  const likedTracksWithArtists = likedTracks.map((track) => ({
+    ...track,
+    artistName: likedArtistById.get(track.userId) || "Artist",
+  }));
 
   return {
-    sections:
-      historyItems.length > 0
-        ? [
-            {
-              title: "Historico",
-              description: "Musicas que reproduziste recentemente.",
-              items: historyItems,
-            },
-            ...defaultAppContent.librarySections,
-          ]
-        : defaultAppContent.librarySections,
-    tracks: [] as WithId<TrackDocument>[],
+    sections: [],
+    tracks: likedTracksWithArtists,
     albums: savedAlbums,
     posts: [] as WithId<PostDocument>[],
     recentPlays,
@@ -461,12 +629,8 @@ export async function getProfileContent(userId?: string | null) {
     };
   }
 
-  if (userId) {
-    await httpsCallable(functions, "publishDueReleasesNow")({}).catch(() => null);
-  }
-
   const [userSnapshot, tracks, publishedAlbums, scheduledAlbums, posts] = await Promise.all([
-    getDoc(doc(db, firestoreCollections.users, userId)),
+    readDocumentWithCache<UserDocument>(firestoreCollections.users, userId),
     readCollectionWithFallback<TrackDocument>(firestoreCollections.tracks, [], {
       limitCount: 30,
       orderField: "createdAt",
@@ -494,9 +658,7 @@ export async function getProfileContent(userId?: string | null) {
   ]);
 
   return {
-    user: userSnapshot.exists()
-      ? ({ id: userSnapshot.id, ...userSnapshot.data() } as WithId<UserDocument>)
-      : defaultAppContent.user,
+    user: userSnapshot ?? defaultAppContent.user,
     tracks,
     albums: Array.from(
       new Map([...scheduledAlbums, ...publishedAlbums].map((album) => [album.id, album])).values(),

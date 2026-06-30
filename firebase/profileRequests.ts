@@ -77,7 +77,7 @@ export async function requestDisplayNameChange(input: {
     userId: input.userId,
     kind: "display_name",
     status: "pending",
-    title: "Pedido para mudar nome",
+    title: "Request to change name",
     currentValue: input.currentValue,
     requestedValue: input.requestedValue,
     createdAt: serverTimestamp(),
@@ -96,8 +96,8 @@ export async function requestContentDeletion(input: {
     status: "pending",
     title:
       input.targetType === "album"
-        ? "Pedido para apagar album"
-        : "Pedido para apagar musica",
+        ? "Request to delete album"
+        : "Request to delete song",
     targetId: input.targetId,
     targetTitle: input.targetTitle,
     createdAt: serverTimestamp(),
@@ -153,18 +153,23 @@ export async function getPendingProfileRequests() {
 }
 
 export async function getAdminProfileRequests() {
-  const snapshot = await getDocs(
-    query(
-      collection(db, firestoreCollections.profileRequests),
-      orderBy("createdAt", "desc"),
-      limit(120),
-    ),
-  );
+  try {
+    const snapshot = await getDocs(
+      query(
+        collection(db, firestoreCollections.profileRequests),
+        orderBy("createdAt", "desc"),
+        limit(120),
+      ),
+    );
 
-  return snapshot.docs.map((docSnap) => ({
-    id: docSnap.id,
-    ...(docSnap.data() as Omit<ProfileRequest, "id">),
-  }));
+    return snapshot.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...(docSnap.data() as Omit<ProfileRequest, "id">),
+    }));
+  } catch (error) {
+    console.log("ADMIN PROFILE REQUESTS FALLBACK:", error);
+    return [];
+  }
 }
 
 export async function approveProfileRequest(request: ProfileRequest, adminName: string) {
@@ -176,6 +181,26 @@ export async function approveProfileRequest(request: ProfileRequest, adminName: 
   }
 
   if (request.kind === "delete_track" && request.targetId) {
+    const trackSnapshot = await getDoc(doc(db, firestorePaths.track(request.targetId)));
+    const trackData = trackSnapshot.data();
+    const albumId = typeof trackData?.albumId === "string" ? trackData.albumId : "";
+
+    if (albumId) {
+      const albumTracks = await getDocs(
+        query(
+          collection(db, firestoreCollections.tracks),
+          where("albumId", "==", albumId),
+        ),
+      );
+      const hasOtherTracks = albumTracks.docs.some(
+        (trackDoc) => trackDoc.id !== request.targetId,
+      );
+
+      if (!hasOtherTracks) {
+        await deleteDoc(doc(db, firestorePaths.album(albumId)));
+      }
+    }
+
     await deleteDoc(doc(db, firestorePaths.track(request.targetId)));
   }
 

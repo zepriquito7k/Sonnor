@@ -11,9 +11,10 @@ import {
   View,
 } from "react-native";
 import { completePasswordReset } from "../../firebase/auth";
+import { useSuccessFeedback } from "../../components/SuccessFeedback";
 import { useResponsive } from "../../utils/responsive";
 
-// Ícones
+// Icons
 import BackIcon from "../../icons/BackIcon";
 import EyeClosed from "../../icons/EyeClosed";
 import EyeOpen from "../../icons/EyeOpen";
@@ -22,6 +23,7 @@ import LockIcon from "../../icons/LockIcon";
 
 export default function NewPasswordScreen() {
   const router = useRouter();
+  const { showSuccess } = useSuccessFeedback();
   const params = useLocalSearchParams<{
     email?: string | string[];
     resetToken?: string | string[];
@@ -65,16 +67,17 @@ export default function NewPasswordScreen() {
 
     if (password !== confirm) {
       setErrorConfirm(true);
-      Alert.alert("Erro", "As senhas não coincidem.");
+      Alert.alert("Error", "The passwords do not match.");
       return;
     }
 
     try {
       setLoading(true);
       await completePasswordReset(email, resetToken, password);
-      // Lógica Firebase aqui
-      Alert.alert("Success", "Your password was updated.");
-      router.replace("/auth/login");
+      showSuccess({
+        message: "Password updated",
+        onDone: () => router.replace("/auth/login"),
+      });
     } catch (err: any) {
       console.log("UPDATE PASSWORD ERROR:", err);
       Alert.alert(
@@ -117,7 +120,7 @@ export default function NewPasswordScreen() {
           Sonnor
         </Text>
 
-        {/* TÍTULOS */}
+        {/* TITLES */}
         <View style={{ marginBottom: hp(4) }}>
           <Text
             style={[
@@ -157,7 +160,7 @@ export default function NewPasswordScreen() {
                 styles.input,
                 { fontSize: font(16), marginLeft: wp(3), paddingRight: wp(10) },
               ]}
-              placeholder="New Password"
+              placeholder="New password"
               placeholderTextColor="#808080"
               secureTextEntry={!showPassword}
               value={password}
@@ -195,7 +198,7 @@ export default function NewPasswordScreen() {
                 styles.input,
                 { fontSize: font(16), marginLeft: wp(3), paddingRight: wp(10) },
               ]}
-              placeholder="Confirm Password"
+              placeholder="Confirm password"
               placeholderTextColor="#808080"
               secureTextEntry={!showConfirm}
               value={confirm}
@@ -227,7 +230,7 @@ export default function NewPasswordScreen() {
           disabled={loading}
         >
           <Text style={[styles.submitButtonText, { fontSize: font(18) }]}>
-            {loading ? "Updating..." : "Update Password"}
+            {loading ? "Updating..." : "Update password"}
           </Text>
         </TouchableOpacity>
       </View>
@@ -241,7 +244,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#000",
   },
   content: {
-    flex: 1, // Ocupa todo o espaço sem scroll
+    flex: 1,
+    // Fills all space without scroll,
   },
   backButton: {
     flexDirection: "row",

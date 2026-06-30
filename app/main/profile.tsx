@@ -1,7 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { Audio } from "expo-av";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { VideoView, useVideoPlayer } from "expo-video";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Animated,
@@ -18,12 +19,16 @@ import {
 } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
-import { usePlayer, type Track } from "../../context/PlayerContext";
-import { getAlbumContent, getProfileContent } from "../../firebase/contentClient";
+import {
+  getProfileContent,
+  publishDueReleasesAndRefreshCache,
+} from "../../firebase/contentClient";
 import { deletePost } from "../../firebase/contentMutations";
 import type { PostDocument, UserDocument } from "../../firebase/schema";
 import {
   countUserFollowers,
+  createLike,
+  createReport,
   createFollow,
   isFollowingUser,
   removeFollow,
@@ -33,9 +38,17 @@ import {
   withCacheBust,
 } from "../../firebase/storageClient";
 import { updateUserProfile } from "../../firebase/userProfile";
+import { useSuccessFeedback } from "../../components/SuccessFeedback";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { getAvatarFallbackColor } from "../../utils/avatarFallback";
 import { pickLibraryAsset } from "../../utils/mediaPicker";
 import { useResponsive } from "../../utils/responsive";
+import {
+  MAX_AVATAR_GIF_DURATION_SECONDS,
+  getImageUploadExtension,
+  isAvatarGifDurationAllowed,
+} from "../../utils/uploadAsset";
+import AnimatedSoundWave from "./components/AnimatedSoundWave";
 
 type TrackItem = {
   id: string;
@@ -67,18 +80,27 @@ type PostItem = {
   id: string;
   ownerId: string;
   caption: string;
+  createdAt?: unknown;
   mediaType: "image" | "video";
   mediaUrl: string;
   thumbnailUrl: string;
   mediaScale: number;
+  mediaStageWidth: number;
+  mediaStageHeight: number;
   likesCount: number;
   linkedTrackId: string;
   linkedTrackTitle: string;
   linkedTrackCoverUrl: string;
+  linkedTrackAudioUrl: string;
+  linkedTrackClipStartSeconds: number;
+  linkedTrackClipEndSeconds: number;
   authorName: string;
   authorAvatarUrl: string;
   overlayMedia: NonNullable<PostDocument["overlayMedia"]>;
 };
+
+const LEGACY_POST_STAGE_WIDTH = 482;
+const LEGACY_POST_STAGE_HEIGHT = 1000;
 
 type MerchProduct = {
   id: string;
@@ -107,9 +129,9 @@ type ProfileExtras = UserDocument & {
 };
 
 const PROFILE_FIELD_LABELS: Record<string, string> = {
-  birthDate: "Nascimento",
-  location: "Localizacao",
-  interests: "Estilos",
+  birthDate: "Birth date",
+  location: "Location",
+  interests: "Styles",
 };
 
 function asString(value: unknown, fallback = "") {
@@ -130,19 +152,19 @@ function relativeDate(value: unknown) {
     date = new Date((value as { seconds: number }).seconds * 1000);
   }
 
-  if (!date) return "Agora";
+  if (!date) return "Now";
 
   const days = Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000));
-  if (days === 0) return "Hoje";
-  if (days === 1) return "Ontem";
-  if (days < 7) return `${days} dias atras`;
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return `${days} days ago`;
   if (days < 60) {
     const weeks = Math.floor(days / 7);
-    return `${weeks} ${weeks === 1 ? "semana" : "semanas"} atras`;
+    return `${weeks} ${weeks === 1 ? "week" : "weeks"} ago`;
   }
   if (days < 365) {
     const months = Math.floor(days / 30);
-    return `${months} ${months === 1 ? "mes" : "meses"} atras`;
+    return `${months} ${months === 1 ? "month" : "months"} ago`;
   }
   return String(date.getFullYear());
 }
@@ -182,14 +204,34 @@ function openUrl(url?: string) {
   );
 }
 
-function MediaBox({ uri, style }: { uri?: string; style: object }) {
+function MediaBox({
+  fallbackColor,
+  fallbackIcon,
+  uri,
+  style,
+}: {
+  fallbackColor?: string;
+  fallbackIcon?: "image-outline" | "person";
+  uri?: string;
+  style: object;
+}) {
   if (uri) {
     return <Image source={{ uri }} style={style} />;
   }
 
   return (
-    <View style={[style, styles.mediaFallback]}>
-      <Ionicons name="image-outline" size={24} color="#777" />
+    <View
+      style={[
+        style,
+        styles.mediaFallback,
+        fallbackColor ? { backgroundColor: fallbackColor } : null,
+      ]}
+    >
+      <Ionicons
+        name={fallbackIcon ?? "image-outline"}
+        size={fallbackIcon === "person" ? 92 : 24}
+        color={fallbackIcon === "person" ? "#fff" : "#777"}
+      />
     </View>
   );
 }
@@ -226,15 +268,15 @@ function ProfileVideoPreview({
 function formatLikesLabel(count: number) {
   if (count >= 1000000) {
     const value = count / 1000000;
-    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}M curtidas`;
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}M likes`;
   }
 
   if (count >= 1000) {
     const value = count / 1000;
-    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}k curtidas`;
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}k likes`;
   }
 
-  return `${count} curtidas`;
+  return `${count} likes`;
 }
 
 function PostGridTile({
@@ -245,7 +287,7 @@ function PostGridTile({
   onPress: () => void;
 }) {
   const [tileSize, setTileSize] = useState({ width: 0, height: 0 });
-  const imageUri = post.thumbnailUrl || post.mediaUrl;
+  const imageUri = post.mediaUrl || post.thumbnailUrl;
   const isVideo = post.mediaType === "video";
 
   return (
@@ -256,12 +298,19 @@ function PostGridTile({
       onPress={onPress}
     >
       {imageUri && !isVideo ? (
-        <Image source={{ uri: imageUri }} style={styles.postGridImage} />
+        <Image
+          source={{ uri: imageUri }}
+          style={[
+            styles.postGridImage,
+            { transform: [{ scale: post.mediaScale || 1 }] },
+          ]}
+        />
       ) : imageUri && isVideo ? (
         <ProfileVideoPreview
           uri={imageUri}
           style={styles.postGridImage}
           contentFit="cover"
+          scale={post.mediaScale || 1}
         />
       ) : (
         <View style={styles.postGridVideoFallback}>
@@ -310,16 +359,110 @@ function FullscreenPost({
   post,
   onClose,
   onDelete,
+  onLike,
+  onReport,
   canDelete,
+  isActive,
+  isLiked,
 }: {
   post: PostItem;
   onClose: () => void;
   onDelete: (post: PostItem) => void;
+  onLike: (post: PostItem) => void;
+  onReport: (post: PostItem) => void;
   canDelete: boolean;
+  isActive: boolean;
+  isLiked: boolean;
 }) {
+  const soundRef = useRef<Audio.Sound | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const imageUri = post.thumbnailUrl || post.mediaUrl;
   const isVideo = post.mediaType === "video";
+  const sourceStageWidth =
+    post.mediaStageWidth ||
+    post.overlayMedia[0]?.stageWidth ||
+    LEGACY_POST_STAGE_WIDTH;
+  const sourceStageHeight =
+    post.mediaStageHeight ||
+    post.overlayMedia[0]?.stageHeight ||
+    LEGACY_POST_STAGE_HEIGHT;
+  const compositionScale = Math.max(
+    stageSize.width / sourceStageWidth || 1,
+    stageSize.height / sourceStageHeight || 1,
+  );
+  const compositionWidth = sourceStageWidth * compositionScale;
+  const compositionHeight = sourceStageHeight * compositionScale;
+
+  useEffect(() => {
+    let cancelled = false;
+    let stopTimer: ReturnType<typeof setTimeout> | null = null;
+
+    async function playLinkedClip() {
+      if (
+        !isActive ||
+        !post.linkedTrackAudioUrl ||
+        post.linkedTrackClipEndSeconds - post.linkedTrackClipStartSeconds < 1
+      ) {
+        return;
+      }
+
+      try {
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: post.linkedTrackAudioUrl },
+          {
+            positionMillis: post.linkedTrackClipStartSeconds * 1000,
+            progressUpdateIntervalMillis: 200,
+            shouldPlay: true,
+          },
+        );
+
+        if (cancelled) {
+          await sound.unloadAsync().catch(() => null);
+          return;
+        }
+
+        soundRef.current = sound;
+        stopTimer = setTimeout(() => {
+          void sound.pauseAsync().catch(() => null);
+          void sound
+            .setPositionAsync(post.linkedTrackClipStartSeconds * 1000)
+            .catch(() => null);
+        }, (post.linkedTrackClipEndSeconds - post.linkedTrackClipStartSeconds) * 1000);
+        sound.setOnPlaybackStatusUpdate((nextStatus) => {
+          if (
+            nextStatus.isLoaded &&
+            nextStatus.positionMillis >= post.linkedTrackClipEndSeconds * 1000
+          ) {
+            void sound.pauseAsync().catch(() => null);
+            void sound
+              .setPositionAsync(post.linkedTrackClipStartSeconds * 1000)
+              .catch(() => null);
+          }
+        });
+      } catch (error) {
+        console.log("PLAY PROFILE POST CLIP ERROR:", error);
+      }
+    }
+
+    void playLinkedClip();
+
+    return () => {
+      cancelled = true;
+      if (stopTimer) {
+        clearTimeout(stopTimer);
+      }
+      const sound = soundRef.current;
+      soundRef.current = null;
+      sound?.setOnPlaybackStatusUpdate(null);
+      void sound?.unloadAsync().catch(() => null);
+    };
+  }, [
+    post.id,
+    isActive,
+    post.linkedTrackAudioUrl,
+    post.linkedTrackClipEndSeconds,
+    post.linkedTrackClipStartSeconds,
+  ]);
 
   return (
     <View style={styles.fullPostRoot}>
@@ -327,54 +470,67 @@ function FullscreenPost({
         style={styles.fullPostStage}
         onLayout={(event) => setStageSize(event.nativeEvent.layout)}
       >
-        {imageUri && !isVideo ? (
-          <Image
-            source={{ uri: imageUri }}
-            style={[
-              styles.fullPostMedia,
-              { transform: [{ scale: post.mediaScale || 1 }] },
-            ]}
-          />
-        ) : imageUri && isVideo ? (
-          <ProfileVideoPreview
-            uri={imageUri}
-            style={styles.fullPostMedia}
-            contentFit="contain"
-            scale={post.mediaScale || 1}
-          />
-        ) : (
-          <View style={styles.fullPostVideoFallback}>
-            <Ionicons name="play" size={42} color="#fff" />
-          </View>
-        )}
-
-        {post.overlayMedia.map((overlay) => {
-          const stageWidth = overlay.stageWidth || 1;
-          const stageHeight = overlay.stageHeight || 1;
-          const scaleX = stageSize.width / stageWidth;
-          const scaleY = stageSize.height / stageHeight;
-          const scaledWidth = overlay.baseWidth * overlay.scale;
-          const scaledHeight = overlay.baseHeight * overlay.scale;
-          const offsetX = (scaledWidth - overlay.baseWidth) / 2;
-          const offsetY = (scaledHeight - overlay.baseHeight) / 2;
-
-          return (
+        <View
+          style={[
+            styles.fullPostComposition,
+            {
+              width: compositionWidth,
+              height: compositionHeight,
+              left: (stageSize.width - compositionWidth) / 2,
+              top: (stageSize.height - compositionHeight) / 2,
+            },
+          ]}
+        >
+          {imageUri && !isVideo ? (
             <Image
-              key={overlay.id}
-              source={{ uri: overlay.mediaUrl }}
+              source={{ uri: imageUri }}
               style={[
-                styles.fullPostOverlayImage,
-                {
-                  left: (overlay.x - offsetX) * scaleX,
-                  top: (overlay.y - offsetY) * scaleY,
-                  width: scaledWidth * scaleX,
-                  height: scaledHeight * scaleY,
-                },
+                styles.fullPostMedia,
+                { transform: [{ scale: post.mediaScale || 1 }] },
               ]}
               resizeMode="contain"
             />
-          );
-        })}
+          ) : imageUri && isVideo ? (
+            <ProfileVideoPreview
+              uri={imageUri}
+              style={styles.fullPostMedia}
+              contentFit="contain"
+              scale={post.mediaScale || 1}
+            />
+          ) : (
+            <View style={styles.fullPostVideoFallback}>
+              <Ionicons name="play" size={42} color="#fff" />
+            </View>
+          )}
+
+          {post.overlayMedia.map((overlay) => {
+            const overlayStageWidth = overlay.stageWidth || sourceStageWidth;
+            const overlayStageHeight = overlay.stageHeight || sourceStageHeight;
+            const scaleX = compositionWidth / overlayStageWidth;
+            const scaleY = compositionHeight / overlayStageHeight;
+            const scaledWidth = overlay.baseWidth * overlay.scale;
+            const scaledHeight = overlay.baseHeight * overlay.scale;
+            const offsetX = (scaledWidth - overlay.baseWidth) / 2;
+            const offsetY = (scaledHeight - overlay.baseHeight) / 2;
+
+            return (
+              <Image
+                key={overlay.id}
+                source={{ uri: overlay.mediaUrl }}
+                style={[
+                  styles.fullPostOverlayImage,
+                  {
+                    left: (overlay.x - offsetX) * scaleX,
+                    top: (overlay.y - offsetY) * scaleY,
+                    width: scaledWidth * scaleX,
+                    height: scaledHeight * scaleY,
+                  },
+                ]}
+                resizeMode="contain"
+              />
+            );
+          })}
+        </View>
       </View>
 
       <TouchableOpacity style={styles.fullPostClose} onPress={onClose}>
@@ -386,17 +542,46 @@ function FullscreenPost({
           style={styles.fullPostMenuButton}
           onPress={() => onDelete(post)}
         >
-          <Ionicons name="ellipsis-horizontal" size={24} color="#fff" />
+          <Ionicons name="trash-outline" size={24} color="#fff" />
         </TouchableOpacity>
       ) : null}
 
       {post.linkedTrackTitle ? (
         <View style={styles.fullPostMusicInside}>
-          <Text style={styles.fullPostMusicTitle} numberOfLines={1}>
-            {post.linkedTrackTitle}
-          </Text>
+          <View style={styles.fullPostMusicIconBox}>
+            <AnimatedSoundWave />
+          </View>
+          <View style={styles.fullPostMusicTextBlock}>
+            <Text style={styles.fullPostMusicTitle} numberOfLines={1}>
+              {post.linkedTrackTitle}
+            </Text>
+            <Text style={styles.fullPostMusicSubtitle} numberOfLines={1}>
+              {post.authorName || "Artist"}
+            </Text>
+          </View>
         </View>
       ) : null}
+
+      <View style={styles.fullPostActionColumn}>
+        <TouchableOpacity
+          style={styles.fullPostRoundAction}
+          onPress={() => onLike(post)}
+          activeOpacity={0.82}
+        >
+          <Ionicons
+            name={isLiked ? "heart" : "heart-outline"}
+            size={24}
+            color={isLiked ? "#ff4f8b" : "#fff"}
+          />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.fullPostRoundAction}
+          onPress={() => onReport(post)}
+          activeOpacity={0.82}
+        >
+          <Ionicons name="alert-circle-outline" size={24} color="#fff" />
+        </TouchableOpacity>
+      </View>
 
       <View style={styles.fullPostBottom}>
         <View style={styles.fullPostProfileRow}>
@@ -406,14 +591,14 @@ function FullscreenPost({
               style={styles.fullPostAvatar}
             />
           ) : (
-            <View style={[styles.fullPostAvatar, styles.mediaFallback]}>
+            <View style={[styles.fullPostAvatar, styles.fullPostAvatarFallback]}>
               <Ionicons name="person-outline" size={20} color="#fff" />
             </View>
           )}
 
           <View style={styles.fullPostTextBlock}>
             <Text style={styles.fullPostAuthor} numberOfLines={1}>
-              {post.authorName || "Perfil"}
+              {post.authorName || "Profile"}
             </Text>
             {post.caption ? (
               <Text style={styles.fullPostCaption} numberOfLines={3}>
@@ -442,7 +627,7 @@ export default function ProfileScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ userId?: string }>();
   const { user } = useCurrentUser();
-  const { playQueue } = usePlayer();
+  const { showSuccess } = useSuccessFeedback();
   const { hp, font, wp } = useResponsive();
   const scrollY = useRef(new Animated.Value(0)).current;
 
@@ -461,6 +646,9 @@ export default function ProfileScreen() {
   const [merchEditorVisible, setMerchEditorVisible] = useState(false);
   const [connectEditorVisible, setConnectEditorVisible] = useState(false);
   const [activePostIndex, setActivePostIndex] = useState<number | null>(null);
+  const [activePostSequence, setActivePostSequence] = useState<PostItem[]>([]);
+  const postFullscreenOpenRef = useRef(false);
+  const [likedPostIds, setLikedPostIds] = useState(() => new Set<string>());
   const [merchMode, setMerchMode] = useState<
     "home" | "logo" | "product" | "gallery"
   >("home");
@@ -481,11 +669,18 @@ export default function ProfileScreen() {
   const [productImageUrl, setProductImageUrl] = useState("");
   const [countdownNow, setCountdownNow] = useState(Date.now());
   const [profileRefreshKey, setProfileRefreshKey] = useState(0);
+  const publishingReleaseIdRef = useRef("");
 
   useEffect(() => {
     const timer = setInterval(() => setCountdownNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      setProfileRefreshKey((current) => current + 1);
+    }, []),
+  );
 
   useEffect(() => {
     let active = true;
@@ -516,7 +711,7 @@ export default function ProfileScreen() {
           .map((track, index) => ({
             id: asString("id" in track ? track.id : "", `track-${index}`),
             albumId: asString("albumId" in track ? track.albumId : ""),
-            title: asString("title" in track ? track.title : "", "Musica"),
+            title: asString("title" in track ? track.title : "", "Music"),
             coverUrl: asString("coverUrl" in track ? track.coverUrl : ""),
             shortVideoUrl: asString(
               "shortVideoUrl" in track ? track.shortVideoUrl : "",
@@ -567,16 +762,27 @@ export default function ProfileScreen() {
       );
 
       setPosts(
-        content.posts.map((post, index) => {
-          const linkedTrackId = asString(
+        content.posts.map((post, index): PostItem => {
+          const storedLinkedTrackId = asString(
             "linkedTrackId" in post ? post.linkedTrackId : "",
           );
+          const clipStartSeconds = asNumber(
+            "linkedTrackClipStartSeconds" in post
+              ? post.linkedTrackClipStartSeconds
+              : 0,
+          );
+          const clipEndSeconds = asNumber(
+            "linkedTrackClipEndSeconds" in post ? post.linkedTrackClipEndSeconds : 0,
+          );
+          const linkedTrackId =
+            clipEndSeconds - clipStartSeconds >= 1 ? storedLinkedTrackId : "";
           const linkedTrack = tracksById.get(linkedTrackId);
 
           return {
             id: asString("id" in post ? post.id : "", `post-${index}`),
             ownerId: asString("userId" in post ? post.userId : ""),
             caption: asString("caption" in post ? post.caption : ""),
+            createdAt: "createdAt" in post ? post.createdAt : undefined,
             mediaType:
               asString("mediaType" in post ? post.mediaType : "image") ===
               "video"
@@ -587,6 +793,12 @@ export default function ProfileScreen() {
               "thumbnailUrl" in post ? post.thumbnailUrl : "",
             ),
             mediaScale: asNumber("mediaScale" in post ? post.mediaScale : 1, 1),
+            mediaStageWidth: asNumber(
+              "mediaStageWidth" in post ? post.mediaStageWidth : 0,
+            ),
+            mediaStageHeight: asNumber(
+              "mediaStageHeight" in post ? post.mediaStageHeight : 0,
+            ),
             likesCount: asNumber("likesCount" in post ? post.likesCount : 0),
             linkedTrackId,
             linkedTrackTitle: asString(
@@ -597,8 +809,15 @@ export default function ProfileScreen() {
                 ? linkedTrack.coverUrl
                 : "",
             ),
+            linkedTrackAudioUrl: asString(
+              linkedTrack && "audioUrl" in linkedTrack
+                ? linkedTrack.audioUrl
+                : "",
+            ),
+            linkedTrackClipStartSeconds: clipStartSeconds,
+            linkedTrackClipEndSeconds: clipEndSeconds,
             authorName:
-              loadedUser.displayName || loadedUser.username || "Perfil",
+              loadedUser.displayName || loadedUser.username || "Profile",
             authorAvatarUrl: asString(loadedUser.avatarUrl),
             overlayMedia: Array.isArray(
               "overlayMedia" in post ? post.overlayMedia : [],
@@ -608,7 +827,7 @@ export default function ProfileScreen() {
                   : []) as NonNullable<PostDocument["overlayMedia"]>)
               : [],
           };
-        }),
+        }).sort((left, right) => dateMillis(right.createdAt) - dateMillis(left.createdAt)),
       );
     }
 
@@ -652,8 +871,11 @@ export default function ProfileScreen() {
     profileUser?.displayName ||
     profileUser?.username ||
     user?.displayName ||
-    "Perfil";
+    "Profile";
   const avatarUrl = profileUser?.avatarUrl || "";
+  const avatarFallbackColor = getAvatarFallbackColor(
+    profileUser?.avatarFallbackColor,
+  );
   const heroImageUrl = avatarUrl || profileUser?.bannerUrl || "";
   const profileLocation = [profileUser?.city, profileUser?.country]
     .map((item) => asString(item).trim())
@@ -676,21 +898,21 @@ export default function ProfileScreen() {
     showProfileLocation
       ? {
           icon: "location-outline" as const,
-          label: "Localizacao",
+          label: "Location",
           value: profileLocation,
         }
       : null,
     showProfileBirthDate
       ? {
           icon: "calendar-outline" as const,
-          label: "Nascimento",
+          label: "Birth date",
           value: profileBirthDate,
         }
       : null,
     showProfileInterests
       ? {
           icon: "musical-notes-outline" as const,
-          label: "Estilos",
+          label: "Styles",
           value: profileInterests,
         }
       : null,
@@ -704,13 +926,9 @@ export default function ProfileScreen() {
   const COLLAPSE_DISTANCE = BANNER_HEIGHT - BANNER_MIN_HEIGHT;
   const MAX_STRETCH = hp(25);
 
-  const bannerHeight = scrollY.interpolate({
-    inputRange: [-MAX_STRETCH, 0, COLLAPSE_DISTANCE],
-    outputRange: [
-      BANNER_HEIGHT + MAX_STRETCH,
-      BANNER_HEIGHT,
-      BANNER_MIN_HEIGHT,
-    ],
+  const bannerTranslateY = scrollY.interpolate({
+    inputRange: [0, COLLAPSE_DISTANCE],
+    outputRange: [0, -COLLAPSE_DISTANCE],
     extrapolate: "clamp",
   });
   const imageScale = scrollY.interpolate({
@@ -749,15 +967,9 @@ export default function ProfileScreen() {
     [tracks],
   );
   const profilePreRelease = albums.find(
-    (album) =>
-      (album.preReleaseEnabled && album.status === "scheduled") ||
-      (album.status === "published" &&
-        dateMillis(album.preReleaseHighlightUntil) > countdownNow),
+    (album) => album.preReleaseEnabled && album.status === "scheduled",
   );
-  const profilePreReleaseCountdownTarget =
-    profilePreRelease?.status === "published"
-      ? profilePreRelease.preReleaseHighlightUntil
-      : profilePreRelease?.releaseDate;
+  const profilePreReleaseCountdownTarget = profilePreRelease?.releaseDate;
   const profilePreReleaseCountdownAt = dateMillis(profilePreReleaseCountdownTarget);
   const profilePreReleaseId = profilePreRelease?.id;
   const publishedAlbums = albums.filter((album) => album.status === "published");
@@ -765,13 +977,33 @@ export default function ProfileScreen() {
   const singleAndEpReleases = publishedAlbums.filter((album) => album.type !== "album");
 
   useEffect(() => {
-    if (!profilePreReleaseId || profilePreReleaseCountdownAt > Date.now()) {
+    if (
+      !profilePreReleaseId ||
+      profilePreReleaseCountdownAt > countdownNow ||
+      publishingReleaseIdRef.current === profilePreReleaseId
+    ) {
       return;
     }
 
-    const timer = setInterval(() => setProfileRefreshKey((current) => current + 1), 10000);
-    return () => clearInterval(timer);
-  }, [profilePreReleaseCountdownAt, profilePreReleaseId]);
+    publishingReleaseIdRef.current = profilePreReleaseId;
+    setAlbums((current) =>
+      current.map((album) =>
+        album.id === profilePreReleaseId
+          ? {
+              ...album,
+              preReleaseEnabled: false,
+              status: "published",
+            }
+          : album,
+      ),
+    );
+    void publishDueReleasesAndRefreshCache(profilePreReleaseId)
+      .then(() => setProfileRefreshKey((current) => current + 1))
+      .catch((error) => {
+        publishingReleaseIdRef.current = "";
+        console.log("PUBLISH PROFILE PRE-RELEASE ERROR:", error);
+      });
+  }, [countdownNow, profilePreReleaseCountdownAt, profilePreReleaseId]);
 
   async function handleFollowPress() {
     if (!user?.uid || !viewedUserId || isOwnProfile || followLoading) {
@@ -793,12 +1025,115 @@ export default function ProfileScreen() {
     } catch (error) {
       console.log("FOLLOW PROFILE ERROR:", error);
       Alert.alert(
-        "Nao foi possivel",
-        "Tenta novamente dentro de alguns segundos.",
+        "Could not",
+        "Tenta novamente dentro de alguns seconds.",
       );
     } finally {
       setFollowLoading(false);
     }
+  }
+
+  async function handleReportViewedProfile() {
+    if (!user?.uid || !viewedUserId || isOwnProfile) {
+      return;
+    }
+
+    await createReport({
+      reporterId: user.uid,
+      targetType: "user",
+      targetId: viewedUserId,
+      reason: "Profile report",
+      details: `Reported profile: ${displayName}`,
+    });
+    showSuccess({ message: "Report sent" });
+  }
+
+  async function handleLikePost(post: PostItem) {
+    if (!user?.uid) {
+      Alert.alert("Login required", "Sign in to like this post.");
+      return;
+    }
+
+    const previousLiked = likedPostIds.has(post.id);
+    setLikedPostIds((current) => {
+      const next = new Set(current);
+      if (previousLiked) {
+        next.delete(post.id);
+      } else {
+        next.add(post.id);
+      }
+      return next;
+    });
+
+    try {
+      const result = await createLike(user.uid, "post", post.id);
+      const liked = (result.data as { liked?: boolean } | undefined)?.liked;
+
+      if (typeof liked === "boolean") {
+        setLikedPostIds((current) => {
+          const next = new Set(current);
+          if (liked) {
+            next.add(post.id);
+          } else {
+            next.delete(post.id);
+          }
+          return next;
+        });
+      }
+    } catch (error) {
+      console.log("LIKE PROFILE POST ERROR:", error);
+      setLikedPostIds((current) => {
+        const next = new Set(current);
+        if (previousLiked) {
+          next.add(post.id);
+        } else {
+          next.delete(post.id);
+        }
+        return next;
+      });
+      Alert.alert("Error", "Could not like this post right now.");
+    }
+  }
+
+  function handleReportPost(post: PostItem) {
+    if (!user?.uid) {
+      Alert.alert("Login required", "Sign in to report this post.");
+      return;
+    }
+
+    Alert.prompt(
+      "Report post",
+      "Enter the report reason.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Send",
+          onPress: async (value?: string) => {
+            const details = value?.trim();
+
+            if (!details) {
+              Alert.alert("Reason required", "Enter the report reason.");
+              return;
+            }
+
+            try {
+              await createReport({
+                reporterId: user.uid,
+                targetType: "post",
+                targetId: post.id,
+                reason: "Post report",
+                details,
+              });
+              showSuccess({ message: "Report sent" });
+            } catch (error) {
+              console.log("REPORT PROFILE POST ERROR:", error);
+              Alert.alert("Error", "Could not send the report right now.");
+            }
+          },
+        },
+      ],
+      "plain-text",
+    );
   }
 
   function getPostMediaUrls(post: PostItem) {
@@ -814,10 +1149,10 @@ export default function ProfileScreen() {
       return;
     }
 
-    Alert.alert("Apagar post?", "Isto remove o post e a midia guardada nele.", [
-      { text: "Cancelar", style: "cancel" },
+    Alert.alert("Delete post?", "This removes the post and the media stored in it.", [
+      { text: "Cancel", style: "cancel" },
       {
-        text: "Apagar",
+        text: "Delete",
         style: "destructive",
         onPress: async () => {
           try {
@@ -825,17 +1160,29 @@ export default function ProfileScreen() {
               postId: post.id,
               mediaUrls: getPostMediaUrls(post),
             });
+            closePostFullscreen();
             setPosts((current) =>
               current.filter((item) => item.id !== post.id),
             );
-            setActivePostIndex(null);
           } catch (error) {
             console.log("DELETE PROFILE POST ERROR:", error);
-            Alert.alert("Erro", "Nao foi possivel apagar o post agora.");
+            Alert.alert("Error", "Could not delete the post right now.");
           }
         },
       },
     ]);
+  }
+
+  function openPostFullscreen(index: number) {
+    postFullscreenOpenRef.current = true;
+    setActivePostSequence(posts);
+    setActivePostIndex(index);
+  }
+
+  function closePostFullscreen() {
+    postFullscreenOpenRef.current = false;
+    setActivePostIndex(null);
+    setActivePostSequence([]);
   }
 
   async function pickAndUpload(
@@ -856,9 +1203,31 @@ export default function ProfileScreen() {
       return null;
     }
 
+    const extension = getImageUploadExtension(asset);
+
+    if (target === "avatar" && extension === "gif") {
+      try {
+        const allowed = await isAvatarGifDurationAllowed(asset.uri);
+
+        if (!allowed) {
+          Alert.alert(
+            "GIF demasiado longo",
+            `The profile GIF must be at most ${MAX_AVATAR_GIF_DURATION_SECONDS} seconds.`,
+          );
+          return null;
+        }
+      } catch (error) {
+        console.log("GIF DURATION CHECK ERROR:", error);
+      }
+    }
+
     const uploadTarget =
       target === "avatar"
-        ? { kind: "avatar" as const, userId: user.uid }
+        ? {
+            kind: "avatar" as const,
+            userId: user.uid,
+            extension,
+          }
         : {
             kind: "temp" as const,
             userId: user.uid,
@@ -869,6 +1238,7 @@ export default function ProfileScreen() {
 
     return {
       url: withCacheBust(upload.downloadUrl),
+      extension,
       type: asset.type === "video" ? ("video" as const) : ("image" as const),
     };
   }
@@ -881,21 +1251,27 @@ export default function ProfileScreen() {
         return;
       }
 
-      await updateUserProfile(user.uid, {
-        avatarUrl: result.url,
-        bannerUrl: result.url,
-      });
+      const nextValues =
+        result.extension === "gif"
+          ? { avatarUrl: result.url }
+          : { avatarUrl: result.url, bannerUrl: result.url };
+
+      await updateUserProfile(user.uid, nextValues);
       setProfileUser((current) =>
         current
-          ? { ...current, avatarUrl: result.url, bannerUrl: result.url }
+          ? {
+              ...current,
+              avatarUrl: result.url,
+              ...(result.extension === "gif" ? {} : { bannerUrl: result.url }),
+            }
           : current,
       );
       setAvatarEditorVisible(false);
     } catch (error) {
       console.log("PICK AVATAR ERROR:", error);
       Alert.alert(
-        "Galeria indisponivel",
-        "Nao foi possivel abrir a galeria. Confirma a permissao das Fotos para o Sonnor.",
+        "Gallery unavailable",
+        "Could not open the gallery. Confirm Photos permission for Sonnor.",
       );
     }
   }
@@ -947,12 +1323,12 @@ export default function ProfileScreen() {
     }
 
     Alert.alert(
-      "Remover da galeria",
-      "Queres remover esta foto ou video do merchandise?",
+      "Remove from gallery",
+      "Do you want to remove this photo or video from the merchandise?",
       [
-        { text: "Cancelar", style: "cancel" },
+        { text: "Cancel", style: "cancel" },
         {
-          text: "Remover",
+          text: "Remove",
           style: "destructive",
           onPress: async () => {
             const nextGallery = merchGallery.filter(
@@ -978,7 +1354,7 @@ export default function ProfileScreen() {
       spotifyUrl: spotifyUrl.trim(),
     });
     setConnectEditorVisible(false);
-    Alert.alert("Guardado", "Spotify conectado ao perfil.");
+    showSuccess({ message: "Guardado" });
   }
 
   async function handleSaveMerchBrand() {
@@ -993,12 +1369,12 @@ export default function ProfileScreen() {
     });
     setMerchEditorVisible(false);
     setMerchMode("home");
-    Alert.alert("Guardado", "Merchandise atualizado no perfil.");
+    showSuccess({ message: "Guardado" });
   }
 
   async function handleSaveProduct() {
     if (!user?.uid || !productTitle.trim() || !productImageUrl) {
-      Alert.alert("Produto incompleto", "Escreve o nome e escolhe uma imagem para a peca.");
+      Alert.alert("Incomplete product", "Enter the name and choose an image for the item.");
       return;
     }
 
@@ -1029,10 +1405,10 @@ export default function ProfileScreen() {
       return;
     }
 
-    Alert.alert("Apagar peca", "Queres remover esta peca do merchandise?", [
-      { text: "Cancelar", style: "cancel" },
+    Alert.alert("Delete item", "Do you want to remove this merchandise item?", [
+      { text: "Cancel", style: "cancel" },
       {
-        text: "Apagar",
+        text: "Delete",
         style: "destructive",
         onPress: async () => {
           const nextProducts = merchProducts.filter(
@@ -1082,53 +1458,17 @@ export default function ProfileScreen() {
     });
   }
 
-  async function playProfileAlbum(album: AlbumItem) {
-    const content = await getAlbumContent(album.id);
-    if (!content) return;
-
-    const queue: Track[] = content.tracks
-      .map((track) => ({
-        id: track.id,
-        uri: track.audioUrl,
-        title: track.title,
-        artist: displayName,
-        cover: track.coverUrl || album.coverUrl,
-        genre: track.genre,
-        shortVideo: track.shortVideoUrl,
-        lyrics: track.lyrics,
-        albumId: album.id,
-        source: "profile" as const,
-      }))
-      .filter((track) => track.uri);
-
-    await playQueue(queue, 0);
-  }
-
-  async function playProfileTrack(track: TrackItem) {
-    if (!track.audioUrl) return;
-
-    await playQueue(
-      [
-        {
-          id: track.id,
-          uri: track.audioUrl,
-          title: track.title,
-          artist: displayName,
-          cover: track.coverUrl,
-          genre: track.genre,
-          shortVideo: track.shortVideoUrl,
-          lyrics: track.lyrics,
-          albumId: track.albumId,
-          source: "profile",
-        },
-      ],
-      0,
-    );
-  }
-
   return (
     <View style={styles.root}>
-      <Animated.View style={[styles.bannerFixed, { height: bannerHeight }]}>
+      <Animated.View
+        style={[
+          styles.bannerFixed,
+          {
+            height: BANNER_HEIGHT,
+            transform: [{ translateY: bannerTranslateY }],
+          },
+        ]}
+      >
         <Animated.View
           style={[
             styles.bannerBackground,
@@ -1140,9 +1480,23 @@ export default function ProfileScreen() {
             },
           ]}
         >
-          <MediaBox uri={heroImageUrl} style={styles.bannerArtist} />
+          <MediaBox
+            uri={heroImageUrl}
+            style={styles.bannerArtist}
+            fallbackColor={avatarFallbackColor}
+            fallbackIcon="person"
+          />
         </Animated.View>
         <View style={styles.bannerDarkOverlay} />
+        {!isOwnProfile ? (
+          <TouchableOpacity
+            style={styles.reportProfileCornerButton}
+            onPress={handleReportViewedProfile}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="alert-circle-outline" size={22} color="#fff" />
+          </TouchableOpacity>
+        ) : null}
         <Animated.View
           style={[styles.bannerContent, { opacity: bannerContentOpacity }]}
         >
@@ -1156,7 +1510,7 @@ export default function ProfileScreen() {
                   <View style={styles.verifyBadge}>
                     <Ionicons name="checkmark" size={13} color="#fff" />
                   </View>
-                  <Text style={styles.verifiedProfileText}>Verificado pela Sonnor</Text>
+                  <Text style={styles.verifiedProfileText}>Verified by Sonnor</Text>
                 </View>
               ) : null}
             </View>
@@ -1172,12 +1526,12 @@ export default function ProfileScreen() {
           >
             <Text style={styles.followText}>
               {isOwnProfile
-                ? "Editar"
+                ? "Edit"
                 : followLoading
                   ? "..."
                   : isFollowing
-                    ? "Seguindo"
-                    : "Seguir"}
+                    ? "Following"
+                    : "Follow"}
             </Text>
           </TouchableOpacity>
         </Animated.View>
@@ -1221,7 +1575,7 @@ export default function ProfileScreen() {
         scrollEventThrottle={16}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: false },
+          { useNativeDriver: true },
         )}
       >
         <View style={styles.statsRow}>
@@ -1230,7 +1584,7 @@ export default function ProfileScreen() {
             <Text style={styles.statValue}>{followersCount}</Text>
           </View>
           <View style={styles.statBlock}>
-            <Text style={styles.statLabel}>Lancamentos</Text>
+            <Text style={styles.statLabel}>Albums</Text>
             <Text style={styles.statValue}>{albums.length}</Text>
           </View>
           <View style={styles.statBlock}>
@@ -1248,7 +1602,7 @@ export default function ProfileScreen() {
               <Text style={styles.bioText}>{profileUser.bio}</Text>
             ) : isOwnProfile ? (
               <Text style={styles.emptyText}>
-                Adiciona uma biografia ao teu perfil.
+                Add a biography to your profile.
               </Text>
             ) : null}
             {publicInfoRows.length > 0 ? (
@@ -1261,14 +1615,6 @@ export default function ProfileScreen() {
                   </View>
                 ))}
               </View>
-            ) : null}
-            {isOwnProfile && profileHiddenFields.length > 0 ? (
-              <Text style={styles.hiddenInfoText}>
-                Oculto:{" "}
-                {profileHiddenFields
-                  .map((field) => PROFILE_FIELD_LABELS[field] ?? field)
-                  .join(", ")}
-              </Text>
             ) : null}
             {spotifyUrl ? (
               <TouchableOpacity
@@ -1307,7 +1653,7 @@ export default function ProfileScreen() {
             </Svg>
             <MediaBox uri={profilePreRelease.coverUrl} style={styles.profilePreReleaseCover} />
             <View style={styles.profilePreReleaseInfo}>
-              <Text style={styles.profilePreReleaseEyebrow}>Pré-lançamento</Text>
+              <Text style={styles.profilePreReleaseEyebrow}>Pre-release</Text>
               <Text numberOfLines={1} style={styles.profilePreReleaseTitle}>
                 {profilePreRelease.title}
               </Text>
@@ -1315,9 +1661,9 @@ export default function ProfileScreen() {
                 {profilePreRelease.type === "ep"
                   ? "EP"
                   : profilePreRelease.type === "album"
-                    ? "Álbum"
+                    ? "Album"
                     : "Single"}{" "}
-                · {profilePreRelease.trackIds.length} faixas
+                · {profilePreRelease.trackIds.length} tracks
               </Text>
               <View style={styles.profilePreReleaseTime}>
                 {countdownParts(profilePreReleaseCountdownTarget, countdownNow).map((part, index) => (
@@ -1325,7 +1671,7 @@ export default function ProfileScreen() {
                     {index > 0 ? <Text style={styles.profilePreReleaseTimeSeparator}>:</Text> : null}
                     <View style={styles.profilePreReleaseTimeBox}>
                       <Text style={styles.profilePreReleaseTimeLabel}>
-                        {["Hora", "Min", "Seg"][index]}
+                        {["Hour", "Min", "Sec"][index]}
                       </Text>
                       <Text style={styles.profilePreReleaseTimeText}>{part}</Text>
                     </View>
@@ -1350,24 +1696,12 @@ export default function ProfileScreen() {
           >
             <View style={styles.topTrackCoverWrap}>
               <MediaBox uri={mostLikedTrack.coverUrl} style={styles.topTrackCover} />
-              <Pressable
-                style={({ pressed }) => [
-                  styles.coverPlayButton,
-                  pressed ? styles.playButtonPressed : null,
-                ]}
-                onPress={(event) => {
-                  event.stopPropagation();
-                  void playProfileTrack(mostLikedTrack);
-                }}
-              >
-                <Ionicons name="play" size={17} color="#06110d" />
-              </Pressable>
             </View>
             <View style={styles.topTrackInfo}>
-              <Text style={styles.topTrackEyebrow}>Mais curtida</Text>
+              <Text style={styles.topTrackEyebrow}>Most liked</Text>
               <Text style={styles.topTrackTitle} numberOfLines={2}>{mostLikedTrack.title}</Text>
               <Text style={styles.topTrackMeta}>
-                {relativeDate(mostLikedTrack.releaseDate)} · {mostLikedTrack.likesCount} curtidas
+                {relativeDate(mostLikedTrack.releaseDate)} · {mostLikedTrack.likesCount} likes
               </Text>
             </View>
           </Pressable>
@@ -1375,15 +1709,12 @@ export default function ProfileScreen() {
 
         {albumReleases.length > 0 ? (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Albuns</Text>
+            <Text style={styles.sectionTitle}>Albums</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               {albumReleases.map((album) => (
                 <Pressable key={album.id} style={styles.albumCard} onPress={() => openProfileAlbum(album)}>
                   <View style={styles.albumCoverWrap}>
                     <MediaBox uri={album.coverUrl} style={styles.albumCover} />
-                    <Pressable style={({ pressed }) => [styles.coverPlayButton, pressed ? styles.playButtonPressed : null]} onPress={(event) => { event.stopPropagation(); void playProfileAlbum(album); }}>
-                      <Ionicons name="play" size={17} color="#06110d" />
-                    </Pressable>
                   </View>
                   <Text style={styles.cardTitle} numberOfLines={1}>
                     {album.title}
@@ -1403,9 +1734,6 @@ export default function ProfileScreen() {
                 <Pressable key={album.id} style={styles.albumCard} onPress={() => openProfileAlbum(album)}>
                   <View style={styles.albumCoverWrap}>
                     <MediaBox uri={album.coverUrl} style={styles.albumCover} />
-                    <Pressable style={({ pressed }) => [styles.coverPlayButton, pressed ? styles.playButtonPressed : null]} onPress={(event) => { event.stopPropagation(); void playProfileAlbum(album); }}>
-                      <Ionicons name="play" size={17} color="#06110d" />
-                    </Pressable>
                   </View>
                   <Text style={styles.cardTitle} numberOfLines={1}>{album.title}</Text>
                   <Text style={styles.cardMeta}>{relativeDate(album.releaseDate)}</Text>
@@ -1417,7 +1745,7 @@ export default function ProfileScreen() {
 
         {albums.length === 0 ? (
           <View style={styles.section}>
-            <Text style={styles.emptyText}>Ainda nao ha lancamentos publicados.</Text>
+            <Text style={styles.emptyText}>No published albums yet.</Text>
           </View>
         ) : null}
 
@@ -1513,11 +1841,11 @@ export default function ProfileScreen() {
                   router.push("/main/components/PopUpCreate/createPost")
                 }
               >
-                <Text style={styles.createMusicText}>Criar post</Text>
+                <Text style={styles.createMusicText}>Create post</Text>
               </TouchableOpacity>
             ) : (
               <Text style={styles.emptyText}>
-                Ainda nao ha posts publicados.
+                No published posts yet.
               </Text>
             )
           ) : (
@@ -1526,35 +1854,63 @@ export default function ProfileScreen() {
                 <PostGridTile
                   key={post.id}
                   post={post}
-                  onPress={() => setActivePostIndex(index)}
+                  onPress={() => openPostFullscreen(index)}
                 />
               ))}
             </View>
           )}
         </View>
+
+        <View pointerEvents="none" style={[styles.endFadeFooter, { height: hp(9) }]}>
+          <Svg height={hp(32)} style={styles.endFade} width="100%">
+            <Defs>
+              <LinearGradient id="profileEndFade" x1="0" x2="0" y1="0" y2="1">
+                <Stop offset="0" stopColor="#ffffff" stopOpacity="0" />
+                <Stop offset="0.52" stopColor="#ffffff" stopOpacity="0.03" />
+                <Stop offset="0.78" stopColor="#ffffff" stopOpacity="0.15" />
+                <Stop offset="1" stopColor="#ffffff" stopOpacity="0.5" />
+              </LinearGradient>
+            </Defs>
+            <Rect fill="url(#profileEndFade)" height={hp(32)} width="100%" x="0" y="0" />
+          </Svg>
+        </View>
       </Animated.ScrollView>
 
       <Modal
-        visible={activePostIndex !== null}
+        visible={activePostIndex !== null && activePostSequence.length > 0}
         animationType="fade"
         transparent={false}
-        onRequestClose={() => setActivePostIndex(null)}
+        onRequestClose={closePostFullscreen}
       >
         <ScrollView
           pagingEnabled
           showsVerticalScrollIndicator={false}
+          onMomentumScrollEnd={(event) => {
+            if (!postFullscreenOpenRef.current) {
+              return;
+            }
+
+            const nextIndex = Math.round(
+              event.nativeEvent.contentOffset.y / hp(100),
+            );
+            setActivePostIndex(nextIndex);
+          }}
           contentOffset={{
             x: 0,
             y: activePostIndex === null ? 0 : activePostIndex * hp(100),
           }}
         >
-          {posts.map((post) => (
+          {activePostSequence.map((post, index) => (
             <View key={`full-${post.id}`} style={{ height: hp(100) }}>
               <FullscreenPost
                 post={post}
-                onClose={() => setActivePostIndex(null)}
+                isActive={activePostIndex === index}
+                onClose={closePostFullscreen}
                 onDelete={handleDeletePost}
+                onLike={(post) => void handleLikePost(post)}
+                onReport={handleReportPost}
                 canDelete={user?.uid === post.ownerId}
+                isLiked={likedPostIds.has(post.id)}
               />
             </View>
           ))}
@@ -1588,7 +1944,7 @@ export default function ProfileScreen() {
               }}
             >
               <Ionicons name="create-outline" size={20} color="#fff" />
-              <Text style={styles.menuText}>Perfil publico</Text>
+              <Text style={styles.menuText}>Public profile</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.menuRow}
@@ -1612,7 +1968,10 @@ export default function ProfileScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.menuRow}
-              onPress={() => setEditMenuVisible(false)}
+              onPress={() => {
+                setEditMenuVisible(false);
+                router.push("/main/profile/organize");
+              }}
             >
               <Ionicons name="options-outline" size={20} color="#fff" />
               <Text style={styles.menuText}>Organizar</Text>
@@ -1645,7 +2004,7 @@ export default function ProfileScreen() {
             <TextInput
               value={spotifyUrl}
               onChangeText={setSpotifyUrl}
-              placeholder="Link do perfil Spotify"
+              placeholder="Spotify profile link"
               placeholderTextColor="#777"
               autoCapitalize="none"
               style={styles.input}
@@ -1654,7 +2013,7 @@ export default function ProfileScreen() {
               style={styles.greenButton}
               onPress={handleSaveSpotify}
             >
-              <Text style={styles.greenButtonText}>Guardar Spotify</Text>
+              <Text style={styles.greenButtonText}>Save Spotify</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -1682,20 +2041,27 @@ export default function ProfileScreen() {
                   style={styles.avatarPreviewImage}
                 />
               ) : (
-                <Ionicons name="person-outline" size={54} color="#777" />
+                <View
+                  style={[
+                    styles.avatarPreviewFallback,
+                    { backgroundColor: avatarFallbackColor },
+                  ]}
+                >
+                  <Ionicons name="person" size={70} color="#fff" />
+                </View>
               )}
             </View>
             <TouchableOpacity
               style={styles.greenButton}
               onPress={handlePickAvatar}
             >
-              <Text style={styles.greenButtonText}>Escolher imagem</Text>
+              <Text style={styles.greenButtonText}>Choose image/GIF</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.secondaryButton}
               onPress={() => setAvatarEditorVisible(false)}
             >
-              <Text style={styles.secondaryButtonText}>Cancelar</Text>
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -1739,13 +2105,13 @@ export default function ProfileScreen() {
                       <Ionicons
                         name="storefront-outline"
                         size={24}
-                        color="#6F8FAF"
+                        color="#E6E6E6"
                       />
                     </View>
                     <View style={styles.trackTextBlock}>
-                      <Text style={styles.merchActionTitle}>Nome e logo</Text>
+                      <Text style={styles.merchActionTitle}>Name e logo</Text>
                       <Text style={styles.merchActionText}>
-                        Nome da marca e imagem principal.
+                        Name da marca e imagem principal.
                       </Text>
                     </View>
                     <Ionicons name="chevron-forward" size={18} color="#777" />
@@ -1761,12 +2127,12 @@ export default function ProfileScreen() {
                       <Ionicons
                         name="shirt-outline"
                         size={24}
-                        color="#6F8FAF"
+                        color="#E6E6E6"
                       />
                     </View>
                     <View style={styles.trackTextBlock}>
                       <Text style={styles.merchActionTitle}>
-                        Adicionar peca
+                        Add item
                       </Text>
                       <Text style={styles.merchActionText}>
                         Produto, foto, preco e link direto.
@@ -1782,7 +2148,7 @@ export default function ProfileScreen() {
                       <Ionicons
                         name="images-outline"
                         size={24}
-                        color="#6F8FAF"
+                        color="#E6E6E6"
                       />
                     </View>
                     <View style={styles.trackTextBlock}>
@@ -1801,7 +2167,7 @@ export default function ProfileScreen() {
                   <TextInput
                     value={merchName}
                     onChangeText={setMerchName}
-                    placeholder="Nome do merchandise"
+                    placeholder="Name do merchandise"
                     placeholderTextColor="#777"
                     style={styles.input}
                   />
@@ -1826,7 +2192,7 @@ export default function ProfileScreen() {
                       <Ionicons name="image-outline" size={28} color="#fff" />
                     )}
                     <Text style={styles.secondaryButtonText}>
-                      {merchLogoUrl ? "Editar logo" : "Adicionar logo PNG/GIF"}
+                      {merchLogoUrl ? "Edit logo" : "Add PNG/GIF logo"}
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -1834,7 +2200,7 @@ export default function ProfileScreen() {
                     onPress={handleSaveMerchBrand}
                   >
                     <Text style={styles.greenButtonText}>
-                      Guardar merchandise
+                      Save merchandise
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -1845,7 +2211,7 @@ export default function ProfileScreen() {
                   <TextInput
                     value={productTitle}
                     onChangeText={setProductTitle}
-                    placeholder="Nome da peca"
+                    placeholder="Item name"
                     placeholderTextColor="#777"
                     style={styles.input}
                   />
@@ -1885,8 +2251,8 @@ export default function ProfileScreen() {
                   >
                     <Text style={styles.secondaryButtonText}>
                       {productImageUrl
-                        ? "Trocar foto da peca"
-                        : "Adicionar foto da peca"}
+                        ? "Change item photo"
+                        : "Add item photo"}
                     </Text>
                   </TouchableOpacity>
                   {productImageUrl ? (
@@ -1900,7 +2266,7 @@ export default function ProfileScreen() {
                     onPress={handleSaveProduct}
                   >
                     <Text style={styles.greenButtonText}>
-                      {selectedProduct ? "Guardar peca" : "Adicionar peca"}
+                      {selectedProduct ? "Save item" : "Add item"}
                     </Text>
                   </TouchableOpacity>
                   {selectedProduct ? (
@@ -1911,9 +2277,9 @@ export default function ProfileScreen() {
                       <Ionicons
                         name="trash-outline"
                         size={18}
-                        color="#ff8a8a"
+                        color="#fff"
                       />
-                      <Text style={styles.dangerButtonText}>Apagar peca</Text>
+                      <Text style={styles.dangerButtonText}>Delete item</Text>
                     </TouchableOpacity>
                   ) : null}
                 </View>
@@ -1926,7 +2292,7 @@ export default function ProfileScreen() {
                     onPress={handleAddGalleryItem}
                   >
                     <Text style={styles.greenButtonText}>
-                      Adicionar foto ou video
+                      Add photo or video
                     </Text>
                   </TouchableOpacity>
                   {merchGallery.map((item) => (
@@ -1945,7 +2311,7 @@ export default function ProfileScreen() {
                         <Ionicons
                           name="trash-outline"
                           size={18}
-                          color="#ff8a8a"
+                          color="#fff"
                         />
                       </Pressable>
                     </View>
@@ -1955,7 +2321,7 @@ export default function ProfileScreen() {
 
               {merchProducts.length > 0 && merchMode === "home" ? (
                 <View style={styles.merchExistingBlock}>
-                  <Text style={styles.editorSubtitle}>Pecas guardadas</Text>
+                  <Text style={styles.editorSubtitle}>Saved items</Text>
                   {merchProducts.map((product) => (
                     <TouchableOpacity
                       key={product.id}
@@ -1982,7 +2348,7 @@ export default function ProfileScreen() {
                         <Ionicons
                           name="trash-outline"
                           size={18}
-                          color="#ff8a8a"
+                          color="#fff"
                         />
                       </Pressable>
                     </TouchableOpacity>
@@ -1998,8 +2364,25 @@ export default function ProfileScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#000" },
-  content: { paddingBottom: 180 },
+  root: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
+  content: {
+    paddingBottom: 0,
+  },
+  endFade: {
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+    transform: [{ translateY: 18 }],
+  },
+  endFadeFooter: {
+    overflow: "visible",
+    position: "relative",
+    width: "100%",
+  },
   bannerFixed: {
     position: "absolute",
     top: 0,
@@ -2018,7 +2401,11 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
-  bannerArtist: { width: "100%", height: "100%", resizeMode: "cover" },
+  bannerArtist: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+  },
   bannerDarkOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.28)",
@@ -2045,17 +2432,66 @@ const styles = StyleSheet.create({
     alignItems: "center",
     zIndex: 8,
   },
-  bannerLeft: { flex: 1 },
-  artistName: { color: "#fff", fontWeight: "900" },
-  artistNameRow: { flexDirection: "row", alignItems: "center", gap: 9, flexWrap: "wrap" },
-  compactNameRow: { flex: 1, flexDirection: "row", alignItems: "center", gap: 6 },
-  verifiedProfilePill: { flexDirection: "row", alignItems: "center", gap: 6 },
-  smallVerifiedProfilePill: { flexDirection: "row", alignItems: "center", gap: 5 },
-  verifyBadge: { width: 23, height: 23, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#2d7dff" },
-  smallVerifyBadge: { width: 15, height: 15, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#2d7dff" },
-  verifiedProfileText: { color: "#eeeeee", fontSize: 12, fontWeight: "900" },
-  artistStudio: { color: "#fff", opacity: 0.92, marginTop: 4 },
-  hero: { width: "100%", justifyContent: "flex-end", backgroundColor: "#111" },
+  bannerLeft: {
+    flex: 1,
+  },
+  artistName: {
+    color: "#fff",
+    fontWeight: "900",
+  },
+  artistNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    flexWrap: "wrap",
+  },
+  compactNameRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  verifiedProfilePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  smallVerifiedProfilePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  verifyBadge: {
+    width: 23,
+    height: 23,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#2d7dff",
+  },
+  smallVerifyBadge: {
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#2d7dff",
+  },
+  verifiedProfileText: {
+    color: "#eeeeee",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  artistStudio: {
+    color: "#fff",
+    opacity: 0.92,
+    marginTop: 4,
+  },
+  hero: {
+    width: "100%",
+    justifyContent: "flex-end",
+    backgroundColor: "#111",
+  },
   heroImage: {
     ...StyleSheet.absoluteFillObject,
     width: "100%",
@@ -2093,21 +2529,47 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 24,
   },
-  identityBlock: { flex: 1 },
-  name: { color: "#fff", fontWeight: "900" },
-  username: { color: "#ddd", marginTop: 4, fontSize: 14 },
+  identityBlock: {
+    flex: 1,
+  },
+  name: {
+    color: "#fff",
+    fontWeight: "900",
+  },
+  username: {
+    color: "#ddd",
+    marginTop: 4,
+    fontSize: 14,
+  },
   followButton: {
     borderRadius: 999,
     paddingHorizontal: 20,
     paddingVertical: 10,
     backgroundColor: "#fff",
   },
+  reportProfileCornerButton: {
+    position: "absolute",
+    top: 52,
+    right: 18,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.38)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+    zIndex: 8,
+  },
   followingButton: {
     backgroundColor: "rgba(255,255,255,0.22)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.3)",
   },
-  followText: { color: "#000", fontWeight: "900" },
+  followText: {
+    color: "#000",
+    fontWeight: "900",
+  },
   statsRow: {
     flexDirection: "row",
     justifyContent: "space-around",
@@ -2115,10 +2577,24 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.08)",
   },
-  statBlock: { alignItems: "center", gap: 4 },
-  statLabel: { color: "#aaa", fontSize: 12, textTransform: "uppercase" },
-  statValue: { color: "#fff", fontSize: 18, fontWeight: "800" },
-  section: { paddingHorizontal: 20, paddingTop: 32 },
+  statBlock: {
+    alignItems: "center",
+    gap: 4,
+  },
+  statLabel: {
+    color: "#aaa",
+    fontSize: 12,
+    textTransform: "uppercase",
+  },
+  statValue: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  section: {
+    paddingHorizontal: 20,
+    paddingTop: 32,
+  },
   sectionHeaderRow: {
     minHeight: 34,
     flexDirection: "row",
@@ -2140,8 +2616,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#fff",
   },
-  bioText: { color: "#ddd", fontSize: 14, lineHeight: 22 },
-  bioMetaText: { color: "#aaa", fontSize: 13, lineHeight: 20, marginTop: 8 },
+  bioText: {
+    color: "#ddd",
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  bioMetaText: {
+    color: "#aaa",
+    fontSize: 13,
+    lineHeight: 20,
+    marginTop: 8,
+  },
   profileInfoGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -2149,9 +2634,21 @@ const styles = StyleSheet.create({
     gap: 6,
     marginTop: 14,
   },
-  profileInfoRow: { flexDirection: "row", alignItems: "center", gap: 5 },
-  profileInfoLabel: { color: "#747474", fontSize: 12, fontWeight: "800" },
-  profileInfoValue: { color: "#a6a6a6", fontSize: 13, fontWeight: "800" },
+  profileInfoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  profileInfoLabel: {
+    color: "#747474",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  profileInfoValue: {
+    color: "#a6a6a6",
+    fontSize: 13,
+    fontWeight: "800",
+  },
   hiddenInfoText: {
     color: "#5f5f5f",
     fontSize: 12,
@@ -2164,12 +2661,19 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 18,
     paddingVertical: 10,
-    backgroundColor: "#6F8FAF",
+    backgroundColor: "#E6E6E6",
     borderWidth: 1,
     borderColor: "#000",
   },
-  spotifyButtonText: { color: "#000", fontWeight: "900" },
-  emptyText: { color: "#888", fontSize: 14, lineHeight: 20 },
+  spotifyButtonText: {
+    color: "#000",
+    fontWeight: "900",
+  },
+  emptyText: {
+    color: "#888",
+    fontSize: 14,
+    lineHeight: 20,
+  },
   topTrackCard: {
     marginHorizontal: 20,
     marginTop: 26,
@@ -2178,14 +2682,40 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 15,
-    backgroundColor: "rgba(111,143,175,0.13)",
+    backgroundColor: "rgba(255,255,255,0.10)",
   },
-  topTrackCoverWrap: { width: 104, height: 104 },
-  topTrackCover: { width: 104, height: 104, borderRadius: 16, overflow: "hidden" },
-  topTrackInfo: { flex: 1 },
-  topTrackEyebrow: { color: "#6F8FAF", fontSize: 11, fontWeight: "900", textTransform: "uppercase" },
-  topTrackTitle: { color: "#fff", fontSize: 21, lineHeight: 25, fontWeight: "900", marginTop: 6 },
-  topTrackMeta: { color: "#9eaaa6", fontSize: 12, fontWeight: "800", marginTop: 8 },
+  topTrackCoverWrap: {
+    width: 104,
+    height: 104,
+  },
+  topTrackCover: {
+    width: 104,
+    height: 104,
+    borderRadius: 16,
+    overflow: "hidden",
+  },
+  topTrackInfo: {
+    flex: 1,
+  },
+  topTrackEyebrow: {
+    color: "#E6E6E6",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  topTrackTitle: {
+    color: "#fff",
+    fontSize: 21,
+    lineHeight: 25,
+    fontWeight: "900",
+    marginTop: 6,
+  },
+  topTrackMeta: {
+    color: "#9eaaa6",
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 8,
+  },
   profilePreRelease: {
     alignItems: "center",
     flexDirection: "row",
@@ -2274,27 +2804,47 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     marginTop: 1,
   },
-  albumCard: { width: 138, marginRight: 16 },
-  albumCoverWrap: { width: 138, height: 138 },
-  albumCover: { width: 138, height: 138, borderRadius: 16, overflow: "hidden" },
-  coverPlayButton: {
-    position: "absolute",
-    right: 8,
-    bottom: 8,
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#6F8FAF",
+  albumCard: {
+    width: 138,
+    marginRight: 16,
   },
-  playButtonPressed: { opacity: 0.42, transform: [{ scale: 0.9 }] },
-  cardTitle: { color: "#fff", fontWeight: "800", marginTop: 8 },
-  cardMeta: { color: "#999", fontSize: 12, marginTop: 3 },
-  trackTextBlock: { flex: 1 },
-  trackTitle: { color: "#fff", fontSize: 15, fontWeight: "800" },
-  trackMeta: { color: "#aaa", fontSize: 12, marginTop: 3 },
-  postsGrid: { flexDirection: "row", flexWrap: "wrap" },
+  albumCoverWrap: {
+    width: 138,
+    height: 138,
+  },
+  albumCover: {
+    width: 138,
+    height: 138,
+    borderRadius: 16,
+    overflow: "hidden",
+  },
+  cardTitle: {
+    color: "#fff",
+    fontWeight: "800",
+    marginTop: 8,
+  },
+  cardMeta: {
+    color: "#999",
+    fontSize: 12,
+    marginTop: 3,
+  },
+  trackTextBlock: {
+    flex: 1,
+  },
+  trackTitle: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  trackMeta: {
+    color: "#aaa",
+    fontSize: 12,
+    marginTop: 3,
+  },
+  postsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
   postGridTile: {
     width: "33.3333%",
     aspectRatio: 0.76,
@@ -2310,7 +2860,10 @@ const styles = StyleSheet.create({
     resizeMode: "cover",
     backgroundColor: "#0f0f0f",
   },
-  postOverlayImage: { position: "absolute", zIndex: 8 },
+  postOverlayImage: {
+    position: "absolute",
+    zIndex: 8,
+  },
   postGridVideoFallback: {
     flex: 1,
     alignItems: "center",
@@ -2328,39 +2881,57 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.62)",
     zIndex: 12,
   },
-  postLikesText: { color: "#fff", fontSize: 10, fontWeight: "900" },
-  fullPostRoot: { flex: 1, backgroundColor: "#000" },
-  fullPostStage: { ...StyleSheet.absoluteFillObject, backgroundColor: "#000" },
-  fullPostMedia: { width: "100%", height: "100%", resizeMode: "contain" },
+  postLikesText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "900",
+  },
+  fullPostRoot: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
+  fullPostStage: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#000",
+  },
+  fullPostComposition: {
+    position: "absolute",
+    overflow: "hidden",
+    backgroundColor: "#000",
+  },
+  fullPostMedia: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "contain",
+  },
   fullPostVideoFallback: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#111",
   },
-  fullPostOverlayImage: { position: "absolute", zIndex: 8 },
+  fullPostOverlayImage: {
+    position: "absolute",
+    zIndex: 8,
+  },
   fullPostClose: {
     position: "absolute",
-    top: 46,
-    left: 16,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    top: 58,
+    left: 18,
+    width: 34,
+    height: 34,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.45)",
     zIndex: 20,
   },
   fullPostMenuButton: {
     position: "absolute",
-    top: 46,
-    right: 16,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    top: 58,
+    right: 18,
+    width: 34,
+    height: 34,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.45)",
     zIndex: 20,
   },
   fullPostMusicInside: {
@@ -2368,13 +2939,46 @@ const styles = StyleSheet.create({
     top: 72,
     left: 72,
     right: 72,
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
     zIndex: 16,
+  },
+  fullPostMusicIconBox: {
+    width: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fullPostMusicTextBlock: {
+    flexShrink: 1,
+    alignItems: "center",
+  },
+  fullPostActionColumn: {
+    position: "absolute",
+    right: 14,
+    bottom: 88,
+    gap: 12,
+    zIndex: 18,
+  },
+  fullPostRoundAction: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.52)",
   },
   fullPostMusicTitle: {
     color: "#fff",
     fontSize: 15,
     fontWeight: "900",
+    textAlign: "center",
+  },
+  fullPostMusicSubtitle: {
+    color: "#d8d8d8",
+    fontSize: 12,
+    marginTop: 3,
     textAlign: "center",
   },
   fullPostBottom: {
@@ -2400,7 +3004,14 @@ const styles = StyleSheet.create({
     borderRadius: 23,
     overflow: "hidden",
   },
-  fullPostTextBlock: { flex: 1 },
+  fullPostAvatarFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+  fullPostTextBlock: {
+    flex: 1,
+  },
   fullPostAuthor: {
     color: "#fff",
     fontSize: 15,
@@ -2422,7 +3033,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(0,0,0,0.55)",
   },
-  fullPostSongCover: { width: "100%", height: "100%", resizeMode: "cover" },
+  fullPostSongCover: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+  },
   createMusicButton: {
     minHeight: 48,
     borderRadius: 14,
@@ -2430,8 +3045,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#fff",
   },
-  createMusicText: { color: "#000", fontWeight: "900" },
-  merchSection: { paddingTop: 44 },
+  createMusicText: {
+    color: "#000",
+    fontWeight: "900",
+  },
+  merchSection: {
+    paddingTop: 44,
+  },
   merchHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -2450,16 +3070,26 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: "#111",
   },
-  productRail: { paddingBottom: 18 },
-  productCard: { width: 160, marginRight: 18 },
+  productRail: {
+    paddingBottom: 18,
+  },
+  productCard: {
+    width: 160,
+    marginRight: 18,
+  },
   productImage: {
     width: 160,
     height: 210,
     borderRadius: 16,
     overflow: "hidden",
   },
-  galleryRail: { paddingTop: 8 },
-  galleryCard: { width: 150, marginRight: 14 },
+  galleryRail: {
+    paddingTop: 8,
+  },
+  galleryCard: {
+    width: 150,
+    marginRight: 14,
+  },
   galleryImage: {
     width: 150,
     height: 200,
@@ -2510,7 +3140,11 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     resizeMode: "cover",
   },
-  sideName: { color: "#fff", fontSize: 17, fontWeight: "900" },
+  sideName: {
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: "900",
+  },
   sideRow: {
     minHeight: 50,
     flexDirection: "row",
@@ -2520,7 +3154,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     marginBottom: 6,
   },
-  sideText: { color: "#fff", fontSize: 15, fontWeight: "800" },
+  sideText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "800",
+  },
   logoutGrid: {
     marginTop: 42,
     minHeight: 82,
@@ -2532,7 +3170,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,90,90,0.34)",
   },
-  logoutGridText: { color: "#ff7474", fontSize: 15, fontWeight: "900" },
+  logoutGridText: {
+    color: "#ff7474",
+    fontSize: 15,
+    fontWeight: "900",
+  },
   menuCard: {
     width: "100%",
     maxWidth: 360,
@@ -2550,7 +3192,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 18,
   },
-  menuText: { color: "#fff", fontSize: 18, fontWeight: "900" },
+  menuText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "900",
+  },
   editorCard: {
     width: "100%",
     maxWidth: 460,
@@ -2586,7 +3232,10 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.08)",
     marginBottom: 10,
   },
-  textArea: { minHeight: 92, textAlignVertical: "top" },
+  textArea: {
+    minHeight: 92,
+    textAlignVertical: "top",
+  },
   primaryButton: {
     minHeight: 46,
     borderRadius: 14,
@@ -2595,7 +3244,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     marginBottom: 10,
   },
-  primaryButtonText: { color: "#000", fontWeight: "900" },
+  primaryButtonText: {
+    color: "#000",
+    fontWeight: "900",
+  },
   secondaryButton: {
     minHeight: 46,
     borderRadius: 14,
@@ -2606,7 +3258,10 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.12)",
     marginBottom: 10,
   },
-  secondaryButtonText: { color: "#fff", fontWeight: "800" },
+  secondaryButtonText: {
+    color: "#fff",
+    fontWeight: "800",
+  },
   dangerButton: {
     minHeight: 46,
     borderRadius: 14,
@@ -2619,7 +3274,11 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,90,90,0.32)",
     marginBottom: 10,
   },
-  dangerButtonText: { color: "#ff8a8a", fontSize: 15, fontWeight: "900" },
+  dangerButtonText: {
+    color: "#ff8a8a",
+    fontSize: 15,
+    fontWeight: "900",
+  },
   deniedBox: {
     borderRadius: 14,
     padding: 12,
@@ -2628,8 +3287,15 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.08)",
     marginBottom: 10,
   },
-  deniedTitle: { color: "#fff", fontWeight: "900", marginBottom: 6 },
-  deniedText: { color: "#ccc", lineHeight: 20 },
+  deniedTitle: {
+    color: "#fff",
+    fontWeight: "900",
+    marginBottom: 6,
+  },
+  deniedText: {
+    color: "#ccc",
+    lineHeight: 20,
+  },
   simpleStatRow: {
     minHeight: 52,
     flexDirection: "row",
@@ -2638,9 +3304,20 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.08)",
   },
-  simpleStatLabel: { color: "#ddd", fontWeight: "700" },
-  simpleStatValue: { color: "#fff", fontSize: 18, fontWeight: "900" },
-  popularLine: { color: "#ddd", fontSize: 14, lineHeight: 24 },
+  simpleStatLabel: {
+    color: "#ddd",
+    fontWeight: "700",
+  },
+  simpleStatValue: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  popularLine: {
+    color: "#ddd",
+    fontSize: 14,
+    lineHeight: 24,
+  },
   logoPicker: {
     minHeight: 94,
     borderRadius: 16,
@@ -2659,7 +3336,7 @@ const styles = StyleSheet.create({
     padding: 18,
     backgroundColor: "#070707",
     borderWidth: 1,
-    borderColor: "rgba(111,143,175,0.22)",
+    borderColor: "rgba(255,255,255,0.16)",
   },
   merchStudioHeader: {
     flexDirection: "row",
@@ -2676,14 +3353,20 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.08)",
   },
   merchEyebrow: {
-    color: "#6F8FAF",
+    color: "#E6E6E6",
     fontSize: 12,
     fontWeight: "900",
     textTransform: "uppercase",
     marginBottom: 4,
   },
-  merchStudioTitle: { color: "#fff", fontSize: 30, fontWeight: "900" },
-  merchActionStack: { gap: 12 },
+  merchStudioTitle: {
+    color: "#fff",
+    fontSize: 30,
+    fontWeight: "900",
+  },
+  merchActionStack: {
+    gap: 12,
+  },
   merchActionCard: {
     minHeight: 86,
     borderRadius: 20,
@@ -2701,10 +3384,18 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(111,143,175,0.12)",
+    backgroundColor: "rgba(255,255,255,0.10)",
   },
-  merchActionTitle: { color: "#fff", fontSize: 16, fontWeight: "900" },
-  merchActionText: { color: "#aaa", fontSize: 12, marginTop: 4 },
+  merchActionTitle: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  merchActionText: {
+    color: "#aaa",
+    fontSize: 12,
+    marginTop: 4,
+  },
   merchPanel: {
     borderRadius: 20,
     padding: 14,
@@ -2712,9 +3403,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.07)",
   },
-  priceRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
-  priceInput: { flex: 1 },
-  currencyGrid: { flexDirection: "row", gap: 6 },
+  priceRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  priceInput: {
+    flex: 1,
+  },
+  currencyGrid: {
+    flexDirection: "row",
+    gap: 6,
+  },
   currencyButton: {
     width: 42,
     height: 48,
@@ -2725,19 +3425,34 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
   },
-  currencyButtonActive: { backgroundColor: "#6F8FAF", borderColor: "#6F8FAF" },
-  currencyText: { color: "#fff", fontSize: 16, fontWeight: "900" },
-  currencyTextActive: { color: "#000" },
-  merchExistingBlock: { marginTop: 18 },
+  currencyButtonActive: {
+    backgroundColor: "#E6E6E6",
+    borderColor: "#E6E6E6",
+  },
+  currencyText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  currencyTextActive: {
+    color: "#000",
+  },
+  merchExistingBlock: {
+    marginTop: 18,
+  },
   greenButton: {
     minHeight: 52,
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#6F8FAF",
+    backgroundColor: "#E6E6E6",
     marginBottom: 10,
   },
-  greenButtonText: { color: "#000", fontSize: 15, fontWeight: "900" },
+  greenButtonText: {
+    color: "#000",
+    fontSize: 15,
+    fontWeight: "900",
+  },
   avatarStudioCard: {
     width: "100%",
     maxWidth: 420,
@@ -2746,7 +3461,7 @@ const styles = StyleSheet.create({
     padding: 18,
     backgroundColor: "#070707",
     borderWidth: 1,
-    borderColor: "rgba(111,143,175,0.22)",
+    borderColor: "rgba(255,255,255,0.16)",
   },
   avatarPreviewFrame: {
     width: 190,
@@ -2761,8 +3476,22 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.1)",
     marginBottom: 20,
   },
-  avatarPreviewImage: { width: "100%", height: "100%", resizeMode: "cover" },
-  logoPreview: { width: 72, height: 72, borderRadius: 16 },
+  avatarPreviewImage: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+  },
+  avatarPreviewFallback: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  logoPreview: {
+    width: 72,
+    height: 72,
+    borderRadius: 16,
+  },
   productPreview: {
     width: "100%",
     height: 220,
@@ -2778,8 +3507,14 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.055)",
     marginBottom: 8,
   },
-  editorListTitle: { flex: 1 },
-  editorThumb: { width: 48, height: 48, borderRadius: 12 },
+  editorListTitle: {
+    flex: 1,
+  },
+  editorThumb: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+  },
   iconDangerButton: {
     width: 38,
     height: 38,
@@ -2804,8 +3539,16 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     marginBottom: 14,
   },
-  productModalTitle: { color: "#fff", fontSize: 20, fontWeight: "900" },
-  productModalMeta: { color: "#aaa", fontSize: 14, marginTop: 5 },
+  productModalTitle: {
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "900",
+  },
+  productModalMeta: {
+    color: "#aaa",
+    fontSize: 14,
+    marginTop: 5,
+  },
   productDescription: {
     color: "#ddd",
     fontSize: 14,

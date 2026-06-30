@@ -207,6 +207,7 @@ const styles = StyleSheet.create({
   sendText: {
     color: "#fff",
     fontWeight: "600",
-    textTransform: "lowercase", // Mantendo o estilo do teu texto "send"
+    textTransform: "lowercase",
+    // Keeps the visual style of the "send" text.
   },
 });

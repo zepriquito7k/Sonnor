@@ -28,52 +28,52 @@ type Step = "choice" | "email" | "code" | "password";
 function getSignupCodeErrorAlert(error: any) {
   if (error?.code === "functions/already-exists") {
     return {
-      message: "Este email ja tem conta. Podes entrar pelo login.",
-      title: "Conta ja existe",
+      message: "This email already has an account. You can sign in from login.",
+      title: "Account already exists",
     };
   }
 
   if (error?.code === "functions/permission-denied") {
     return {
       message:
-        "A funcao que envia o codigo ainda nao esta publica/publicada para criar conta sem login.",
-      title: "Permissao no Firebase",
+        "The function that sends the code is not public/published yet for account creation without login.",
+      title: "Firebase permission",
     };
   }
 
   if (error?.code === "functions/failed-precondition") {
     return {
       message:
-        "O Gmail SMTP ainda nao esta configurado no servidor.",
-      title: "Email nao configurado",
+        "Gmail SMTP is not configured on the server yet.",
+      title: "Email not configured",
     };
   }
 
   if (error?.code === "functions/not-found") {
     return {
       message:
-        "A funcao de enviar codigo ainda nao foi publicada no Firebase. Publica as Functions e tenta outra vez.",
-      title: "Funcao nao publicada",
+        "The code sending function has not been published in Firebase yet. Publish the Functions and try again.",
+      title: "Function not published",
     };
   }
 
   if (error?.code === "functions/resource-exhausted") {
     return {
-      message: "Foram pedidos codigos demais agora. Espera um pouco e tenta novamente.",
-      title: "Muitos pedidos",
+      message: "Too many codes were requested right now. Wait a little and try again.",
+      title: "Too many requests",
     };
   }
 
   if (error?.code === "functions/unavailable") {
     return {
-      message: "O servico de email esta temporariamente indisponivel. Tenta novamente em instantes.",
-      title: "Email indisponivel",
+      message: "The email service is temporarily unavailable. Try again in a moment.",
+      title: "Email unavailable",
     };
   }
 
   return {
-    message: "Nao foi possivel enviar o codigo agora.",
-    title: "Erro",
+    message: "Could not send the code right now.",
+    title: "Error",
   };
 }
 
@@ -93,28 +93,28 @@ export default function NewAccount() {
   const stepCopy = useMemo(() => {
     if (step === "choice") {
       return {
-        title: "Criar conta",
-        subtitle: "Escolhe como queres comecar no Sonnor.",
+        title: "Create account",
+        subtitle: "Choose how you want to start on Sonnor.",
       };
     }
 
     if (step === "email") {
       return {
-        title: "Qual e o teu email?",
-        subtitle: "Vamos enviar um codigo de 4 digitos antes de criar a conta.",
+        title: "What is your email?",
+        subtitle: "We will send a 4-digit code before creating the account.",
       };
     }
 
     if (step === "code") {
       return {
-        title: "Confirma o codigo",
-        subtitle: `Enviamos 4 digitos para ${email.trim().toLowerCase()}.`,
+        title: "Confirm the code",
+        subtitle: `We sent 4 digits to ${email.trim().toLowerCase()}.`,
       };
     }
 
     return {
-      title: "Cria a tua chave",
-      subtitle: "Agora escolhe uma password para proteger a tua conta.",
+      title: "Create your password",
+      subtitle: "Now choose a password to protect your account.",
     };
   }, [email, step]);
 
@@ -122,7 +122,7 @@ export default function NewAccount() {
     const cleanEmail = email.trim().toLowerCase();
 
     if (!isValidEmail(cleanEmail)) {
-      Alert.alert("Email invalido", "Escreve um email valido.");
+      Alert.alert("Invalid email", "Enter a valid email.");
       return;
     }
 
@@ -143,7 +143,7 @@ export default function NewAccount() {
 
   async function handleVerifyCode() {
     if (code.trim().length !== 4) {
-      Alert.alert("Codigo incompleto", "Escreve os 4 digitos enviados por email.");
+      Alert.alert("Incomplete code", "Enter the 4 digits sent by email.");
       return;
     }
 
@@ -153,7 +153,7 @@ export default function NewAccount() {
       setStep("password");
     } catch (error) {
       console.log("VERIFY SIGNUP CODE ERROR:", error);
-      Alert.alert("Codigo invalido", "Confirma o codigo ou pede outro.");
+      Alert.alert("Invalid code", "Confirm the code or request another.");
     } finally {
       setLoading(false);
     }
@@ -211,12 +211,12 @@ export default function NewAccount() {
 
   async function handleCreateAccount() {
     if (password.trim().length < 6) {
-      Alert.alert("Password curta", "A password precisa de pelo menos 6 caracteres.");
+      Alert.alert("Password too short", "The password must have at least 6 characters.");
       return;
     }
 
     if (password !== confirm) {
-      Alert.alert("Passwords diferentes", "Confirma a mesma password nos dois campos.");
+      Alert.alert("Passwords do not match", "Enter the same password in both fields.");
       return;
     }
 
@@ -228,18 +228,18 @@ export default function NewAccount() {
       console.log("CREATE ACCOUNT ERROR:", error);
 
       if (error?.code === "auth/email-already-in-use") {
-        Alert.alert("Conta ja existe", "Este email ja tem conta. Podes entrar pelo login.");
+        Alert.alert("Account already exists", "This email already has an account. You can sign in from login.");
         return;
       }
 
-      Alert.alert("Erro", "Nao foi possivel criar a conta agora.");
+      Alert.alert("Error", "Could not create the account right now.");
     } finally {
       setLoading(false);
     }
   }
 
   function handleApple() {
-    Alert.alert("Apple", "A opcao Apple esta pronta no visual. Falta ligar o provedor Apple no Firebase.");
+    Alert.alert("Apple", "The Apple option is ready visually. The Apple provider still needs to be connected in Firebase.");
   }
 
   return (
@@ -299,7 +299,7 @@ export default function NewAccount() {
                 style={[styles.greenButton, loading ? styles.buttonDisabled : null]}
                 onPress={handleSendCode}
               >
-                <Text style={styles.greenText}>{loading ? "A enviar..." : "Enviar codigo"}</Text>
+                <Text style={styles.greenText}>{loading ? "Sending..." : "Send code"}</Text>
               </TouchableOpacity>
             </>
           ) : null}
@@ -337,10 +337,10 @@ export default function NewAccount() {
                 style={[styles.greenButton, loading ? styles.buttonDisabled : null]}
                 onPress={handleVerifyCode}
               >
-                <Text style={styles.greenText}>{loading ? "A confirmar..." : "Confirmar codigo"}</Text>
+                <Text style={styles.greenText}>{loading ? "Confirming..." : "Confirm code"}</Text>
               </TouchableOpacity>
               <TouchableOpacity disabled={loading} style={styles.ghostButton} onPress={handleSendCode}>
-                <Text style={styles.ghostText}>Enviar outro codigo</Text>
+                <Text style={styles.ghostText}>Send another code</Text>
               </TouchableOpacity>
             </>
           ) : null}
@@ -373,14 +373,14 @@ export default function NewAccount() {
                 style={[styles.greenButton, loading ? styles.buttonDisabled : null]}
                 onPress={handleCreateAccount}
               >
-                <Text style={styles.greenText}>{loading ? "A criar..." : "Criar conta"}</Text>
+                <Text style={styles.greenText}>{loading ? "Creating..." : "Create account"}</Text>
               </TouchableOpacity>
             </>
           ) : null}
         </View>
 
         <TouchableOpacity style={styles.loginLink} onPress={() => router.replace("/auth/login")}>
-          <Text style={styles.loginText}>Ja tenho conta</Text>
+          <Text style={styles.loginText}>I already have an account</Text>
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
@@ -423,7 +423,7 @@ const styles = StyleSheet.create({
     marginBottom: 22,
   },
   eyebrow: {
-    color: "#6F8FAF",
+    color: "#E6E6E6",
     fontWeight: "900",
     textTransform: "uppercase",
     marginBottom: 8,
@@ -504,8 +504,8 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.1)",
   },
   codeBoxFilled: {
-    borderColor: "#6F8FAF",
-    backgroundColor: "rgba(111,143,175,0.12)",
+    borderColor: "#E6E6E6",
+    backgroundColor: "rgba(255,255,255,0.10)",
   },
   codeInput: {
     textAlign: "center",
@@ -533,7 +533,7 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#6F8FAF",
+    backgroundColor: "#E6E6E6",
   },
   buttonDisabled: {
     opacity: 0.65,

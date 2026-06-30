@@ -1,10 +1,12 @@
 import * as crypto from "crypto";
+import * as path from "path";
 import * as admin from "firebase-admin";
 import { defineSecret } from "firebase-functions/params";
 import { onDocumentCreated, onDocumentWritten } from "firebase-functions/v2/firestore";
 import { HttpsError, onCall, onRequest } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const nodemailer = require("nodemailer");
 
 if (!admin.apps.length) {
@@ -14,6 +16,7 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 const OTP_TTL_MS = 5 * 60 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 const RESET_SESSION_TTL_MS = 10 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
 const VERIFIED_MIN_FOLLOWERS = 1000000;
@@ -64,6 +67,21 @@ function getTimestampInMillis(value: unknown): number | null {
   }
 
   return null;
+}
+
+async function enforceOtpCooldown(
+  collectionName: string,
+  documentId: string,
+) {
+  const snapshot = await db.collection(collectionName).doc(documentId).get();
+  const createdAt = getTimestampInMillis(snapshot.data()?.createdAt);
+
+  if (createdAt && Date.now() - createdAt < OTP_RESEND_COOLDOWN_MS) {
+    throw new HttpsError(
+      "resource-exhausted",
+      "Aguarda um minuto antes de pedir outro codigo.",
+    );
+  }
 }
 
 async function createInAppNotification(input: {
@@ -120,6 +138,11 @@ async function ensurePasswordResetUser(email: string) {
 }
 
 async function sendTransactionalEmail(options: {
+  attachments?: {
+    cid: string;
+    filename: string;
+    path: string;
+  }[];
   email: string;
   subject: string;
   html: string;
@@ -147,6 +170,7 @@ async function sendTransactionalEmail(options: {
   try {
     await transporter.sendMail({
       from: `Sonnor <${gmailUser}>`,
+      attachments: options.attachments,
       html: options.html,
       subject: options.subject,
       text: options.text,
@@ -159,6 +183,179 @@ async function sendTransactionalEmail(options: {
       "The email service is temporarily unavailable.",
     );
   }
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function readSubmissionTitle(data: admin.firestore.DocumentData, fallback: string) {
+  return (
+    (typeof data.declaredTitle === "string" && data.declaredTitle.trim()) ||
+    (typeof data.originalFileName === "string" && data.originalFileName.trim()) ||
+    fallback
+  );
+}
+
+function buildOwnershipContactEmail(submissions: admin.firestore.DocumentData[]) {
+  const logoCid = "sonnor-bristol-logo";
+  const logoPath = path.join(__dirname, "../assets/sonnor-bristol-logo.png");
+  const first = submissions[0] ?? {};
+  const releaseTitle =
+    (typeof first.reviewBatchTitle === "string" && first.reviewBatchTitle.trim()) ||
+    readSubmissionTitle(first, "Envio musical");
+  const releaseType =
+    typeof first.reviewBatchReleaseType === "string"
+      ? first.reviewBatchReleaseType.toUpperCase()
+      : submissions.length > 1
+        ? "LOTE"
+        : "FAIXA";
+  const rows = submissions
+    .map((submission, index) => {
+      const title = readSubmissionTitle(submission, `Faixa ${index + 1}`);
+      const fileName =
+        typeof submission.originalFileName === "string"
+          ? submission.originalFileName.trim()
+          : "";
+
+      return {
+        fileName,
+        number: index + 1,
+        title,
+      };
+    });
+  const textTrackList = rows
+    .map((row) =>
+      row.fileName && row.fileName !== row.title
+        ? `${row.number}. ${row.title}\n   Ficheiro: ${row.fileName}`
+        : `${row.number}. ${row.title}`,
+    )
+    .join("\n");
+  const text = [
+    "SONNOR",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "CONFIRMACAO DE TITULARIDADE",
+    "",
+    "Olá,",
+    "",
+    "Estamos a rever um envio musical na Sonnor e precisamos confirmar alguns detalhes de titularidade antes de permitir a publicação.",
+    "",
+    "ENVIO EM ANALISE",
+    "----------------",
+    `Pasta/Lancamento: ${releaseTitle}`,
+    `Tipo: ${releaseType}`,
+    `Total de faixas: ${submissions.length}`,
+    "",
+    "MUSICAS / FICHEIROS INCLUIDOS",
+    "-----------------------------",
+    textTrackList,
+    "",
+    "Para continuar, responde a este email com qualquer prova, contexto ou informação que confirme que tens autorização para publicar este conteúdo na plataforma.",
+    "",
+    "O QUE PODES ENVIAR",
+    "------------------",
+    "- Prova de autoria ou autorização",
+    "- Informação sobre produtores, compositores ou colaboradores",
+    "- Links oficiais ou documentos que ajudem na verificação",
+    "",
+    "Assim que recebermos a tua resposta, a equipa Sonnor continua a revisão do envio.",
+    "",
+    "Obrigado,",
+    "Equipa Sonnor",
+  ].join("\n");
+  const htmlRows = rows
+    .map((row) => `
+      <tr>
+        <td style="padding: 14px 0; width: 36px; color: #8a8a8a; font-size: 13px; font-weight: 700; vertical-align: top;">
+          ${row.number}.
+        </td>
+        <td style="padding: 14px 0; border-bottom: 1px solid #ededed;">
+          <div style="color: #111; font-size: 15px; font-weight: 800;">${escapeHtml(row.title)}</div>
+          ${
+            row.fileName && row.fileName !== row.title
+              ? `<div style="margin-top: 5px; color: #777; font-size: 13px;">Ficheiro: ${escapeHtml(row.fileName)}</div>`
+              : ""
+          }
+        </td>
+      </tr>
+    `)
+    .join("");
+  const html = `
+    <div style="margin: 0; padding: 0; background: #f5f5f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; color: #111;">
+      <div style="max-width: 620px; margin: 0 auto; padding: 28px 16px;">
+        <div style="background: #ffffff; border-radius: 28px; overflow: hidden; border: 1px solid #ececec; box-shadow: 0 18px 50px rgba(0,0,0,0.08);">
+          <div style="padding: 24px 24px 22px; background: #050505; color: #fff; text-align: center;">
+            <img src="cid:${logoCid}" alt="Sonnor" width="104" style="display: block; width: 104px; max-width: 46%; height: auto; border: 0; margin: 0 auto;" />
+          </div>
+          <div style="padding: 30px 28px;">
+            <p style="margin: 0 0 14px; color: #111; font-size: 18px; font-weight: 800;">Olá,</p>
+            <p style="margin: 0; color: #444; font-size: 15px; line-height: 1.65;">
+              Estamos a rever um envio musical na Sonnor e precisamos confirmar alguns detalhes de titularidade antes de permitir a publicação.
+            </p>
+
+            <div style="margin: 26px 0; padding: 18px; border-radius: 22px; background: #f7f7f7; border: 1px solid #ededed;">
+              <div style="margin-bottom: 14px; color: #111; font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px;">
+                Envio em análise
+              </div>
+              <div style="margin-bottom: 8px; color: #111; font-size: 15px;"><strong>Pasta/Lancamento:</strong> ${escapeHtml(releaseTitle)}</div>
+              <div style="margin-bottom: 8px; color: #111; font-size: 15px;"><strong>Tipo:</strong> ${escapeHtml(releaseType)}</div>
+              <div style="color: #111; font-size: 15px;"><strong>Total de faixas:</strong> ${submissions.length}</div>
+            </div>
+
+            <div style="margin-bottom: 26px;">
+              <div style="margin-bottom: 6px; color: #111; font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px;">
+                Musicas / ficheiros incluídos
+              </div>
+              <table role="presentation" style="width: 100%; border-collapse: collapse;">
+                ${htmlRows}
+              </table>
+            </div>
+
+            <p style="margin: 0 0 18px; color: #444; font-size: 15px; line-height: 1.65;">
+              Para continuar, responde a este email com qualquer prova, contexto ou informação que confirme que tens autorização para publicar este conteúdo na plataforma.
+            </p>
+
+            <div style="margin: 0 0 26px; padding: 18px; border-radius: 20px; background: #fbfbfb; border: 1px solid #ededed;">
+              <div style="margin-bottom: 10px; color: #111; font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px;">
+                O que podes enviar
+              </div>
+              <ul style="margin: 0; padding-left: 18px; color: #444; font-size: 15px; line-height: 1.7;">
+                <li>Prova de autoria ou autorização</li>
+                <li>Informação sobre produtores, compositores ou colaboradores</li>
+                <li>Links oficiais ou documentos que ajudem na verificação</li>
+              </ul>
+            </div>
+
+            <p style="margin: 0; color: #444; font-size: 15px; line-height: 1.65;">
+              Assim que recebermos a tua resposta, a equipa Sonnor continua a revisão do envio.
+            </p>
+            <p style="margin: 24px 0 0; color: #111; font-size: 15px; font-weight: 800;">
+              Obrigado,<br />Equipa Sonnor
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  return {
+    attachments: [
+      {
+        cid: logoCid,
+        filename: "sonnor-bristol-logo.png",
+        path: logoPath,
+      },
+    ],
+    html,
+    releaseTitle,
+    text,
+  };
 }
 
 async function sendPasswordResetOtp(email: string, code: string) {
@@ -249,6 +446,7 @@ export const sendOtpEmail = onCall({ secrets: [GMAIL_USER, GMAIL_APP_PASSWORD] }
   }
 
   await ensurePasswordResetUser(email);
+  await enforceOtpCooldown("otps", email);
   const otp = generateOtp();
   const otpHash = hashCode(otp);
 
@@ -258,7 +456,6 @@ export const sendOtpEmail = onCall({ secrets: [GMAIL_USER, GMAIL_APP_PASSWORD] }
 
   await db.collection("otps").doc(email).set({
     codeHash: otpHash,
-    debugCode: otp,
     expiresAt,
     attempts: 0,
     purpose: "password-reset",
@@ -425,9 +622,9 @@ export const sendDeleteAccountOtpEmail = onCall(
     new Date(Date.now() + OTP_TTL_MS),
   );
 
+  await enforceOtpCooldown("accountDeletionOtps", uid);
   await db.collection("accountDeletionOtps").doc(uid).set({
     codeHash: otpHash,
-    debugCode: otp,
     email,
     expiresAt,
     attempts: 0,
@@ -468,6 +665,7 @@ export const sendSignupOtpEmail = onCall(
     }
   }
 
+  await enforceOtpCooldown("signupOtps", email);
   const otp = generateOtp();
   const otpHash = hashCode(otp);
   const expiresAt = admin.firestore.Timestamp.fromDate(
@@ -476,7 +674,6 @@ export const sendSignupOtpEmail = onCall(
 
   await db.collection("signupOtps").doc(email).set({
     codeHash: otpHash,
-    debugCode: otp,
     expiresAt,
     attempts: 0,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -569,6 +766,7 @@ async function createSignupOtp(email: string) {
     }
   }
 
+  await enforceOtpCooldown("signupOtps", email);
   const otp = generateOtp();
   const otpHash = hashCode(otp);
   const expiresAt = admin.firestore.Timestamp.fromDate(
@@ -577,7 +775,6 @@ async function createSignupOtp(email: string) {
 
   await db.collection("signupOtps").doc(email).set({
     codeHash: otpHash,
-    debugCode: otp,
     expiresAt,
     attempts: 0,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -717,6 +914,93 @@ async function collectQueryRefs(
   return snapshot.docs;
 }
 
+async function removeAlbumEverywhere(albumId: string, ownerId: string) {
+  const refsToDelete: FirebaseFirestore.DocumentReference[] = [
+    db.collection("albums").doc(albumId),
+  ];
+
+  const [trackDocs, linkedAlbumPostDocs] = await Promise.all([
+    collectQueryRefs(refsToDelete, db.collection("tracks").where("albumId", "==", albumId)),
+    collectQueryRefs(refsToDelete, db.collection("posts").where("linkedAlbumId", "==", albumId)),
+  ]);
+  const trackIds = trackDocs.map((docSnap) => docSnap.id);
+  const linkedTrackPostDocs = (
+    await Promise.all(
+      trackIds.map((trackId) =>
+        collectQueryRefs(refsToDelete, db.collection("posts").where("linkedTrackId", "==", trackId)),
+      ),
+    )
+  ).flat();
+  const postIds = Array.from(
+    new Set([...linkedAlbumPostDocs, ...linkedTrackPostDocs].map((docSnap) => docSnap.id)),
+  );
+  const targets = [
+    { id: albumId, type: "album" },
+    ...trackIds.map((id) => ({ id, type: "track" })),
+    ...postIds.map((id) => ({ id, type: "post" })),
+  ];
+
+  await Promise.all([
+    ...targets.flatMap((target) => [
+      collectQueryRefs(
+        refsToDelete,
+        db.collection("comments").where("targetId", "==", target.id),
+        (data) => data.targetType === target.type,
+      ),
+      collectQueryRefs(
+        refsToDelete,
+        db.collection("likes").where("targetId", "==", target.id),
+        (data) => data.targetType === target.type,
+      ),
+      collectQueryRefs(
+        refsToDelete,
+        db.collection("reports").where("targetId", "==", target.id),
+        (data) => data.targetType === target.type,
+      ),
+    ]),
+    collectQueryRefs(refsToDelete, db.collection("recentPlays").where("albumId", "==", albumId)),
+    collectQueryRefs(refsToDelete, db.collection("releaseReminders").where("albumId", "==", albumId)),
+  ]);
+
+  await deleteDocumentRefs(refsToDelete);
+
+  const usersWithSavedAlbum = await db
+    .collection("users")
+    .where("settings.library.savedAlbumIds", "array-contains", albumId)
+    .get();
+
+  await Promise.all(
+    usersWithSavedAlbum.docs.map((docSnap) =>
+      docSnap.ref.set({
+        settings: {
+          library: {
+            savedAlbumIds: admin.firestore.FieldValue.arrayRemove(albumId),
+          },
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true }),
+    ),
+  );
+
+  const bucket = admin.storage().bucket();
+  await Promise.all([
+    bucket.deleteFiles({ prefix: `albums/${albumId}/`, force: true }).catch(() => null),
+    ...trackIds.map((trackId) =>
+      bucket.deleteFiles({ prefix: `tracks/${trackId}/`, force: true }).catch(() => null),
+    ),
+    ...postIds.map((postId) =>
+      bucket.deleteFiles({ prefix: `posts/${postId}/`, force: true }).catch(() => null),
+    ),
+  ]);
+
+  await db.collection("users").doc(ownerId).set({
+    albumsCount: admin.firestore.FieldValue.increment(-1),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  return { deletedPosts: postIds.length, deletedTracks: trackIds.length };
+}
+
 async function deleteStorageForAccount(input: {
   albumIds: string[];
   messageThreadIds: string[];
@@ -748,7 +1032,7 @@ async function deleteStorageForAccount(input: {
 async function isCallableAdmin(request: any) {
   const identity = await getCallableIdentity(request);
   const uid = identity?.uid;
-  const email = identity?.email;
+  const email = identity?.email?.trim().toLowerCase();
 
   if (!uid) {
     return false;
@@ -762,10 +1046,21 @@ async function isCallableAdmin(request: any) {
     return false;
   }
 
+  return isAdminEmail(email);
+}
+
+async function isAdminEmail(email: string) {
   const adminsSnap = await db.collection("appConfig").doc("admins").get();
   const adminEmails = adminsSnap.data()?.adminEmails;
 
-  return Array.isArray(adminEmails) && adminEmails.includes(email);
+  return (
+    Array.isArray(adminEmails) &&
+    adminEmails.some(
+      (adminEmail) =>
+        typeof adminEmail === "string" &&
+        adminEmail.trim().toLowerCase() === email,
+    )
+  );
 }
 
 async function getCallableIdentity(request: any) {
@@ -796,6 +1091,115 @@ async function getCallableIdentity(request: any) {
     uid: decoded.uid,
   };
 }
+
+export const getCurrentAdminStatus = onCall(async (request) => {
+  const identity = await getCallableIdentity(request);
+  const email = identity?.email?.trim().toLowerCase();
+
+  if (!identity?.uid) {
+    return { admin: false, claimSynced: false };
+  }
+
+  if (identity.admin === true) {
+    return { admin: true, claimSynced: true };
+  }
+
+  if (!email || !(await isAdminEmail(email))) {
+    return { admin: false, claimSynced: false };
+  }
+
+  const userRecord = await admin.auth().getUser(identity.uid);
+  const currentClaims = userRecord.customClaims ?? {};
+
+  if (currentClaims.admin !== true) {
+    await admin.auth().setCustomUserClaims(identity.uid, {
+      ...currentClaims,
+      admin: true,
+    });
+  }
+
+  return { admin: true, claimSynced: true };
+});
+
+export const sendMusicOwnershipContactEmail = onCall(
+  { secrets: [GMAIL_USER, GMAIL_APP_PASSWORD] },
+  async (request) => {
+    if (!(await isCallableAdmin(request))) {
+      throw new HttpsError("permission-denied", "Admin permission required.");
+    }
+
+    const rawSubmissionIds: unknown = request.data?.submissionIds;
+    const submissionIds: string[] = Array.isArray(rawSubmissionIds)
+      ? rawSubmissionIds.filter(
+          (id: unknown): id is string => typeof id === "string" && id.trim().length > 0,
+        )
+      : [];
+
+    if (submissionIds.length === 0 || submissionIds.length > 20) {
+      throw new HttpsError("invalid-argument", "Submission ids are required.");
+    }
+
+    const submissionRefs: FirebaseFirestore.DocumentReference[] = submissionIds.map((id: string) =>
+      db.collection("musicSubmissions").doc(id),
+    );
+    const submissionSnaps = await Promise.all(
+      submissionRefs.map((ref: FirebaseFirestore.DocumentReference) => ref.get()),
+    );
+    const missingSubmission = submissionSnaps.find((snap) => !snap.exists);
+
+    if (missingSubmission) {
+      throw new HttpsError("not-found", "One or more submissions were not found.");
+    }
+
+    const submissions: admin.firestore.DocumentData[] = submissionSnaps.map((snap) => ({
+      id: snap.id,
+      ...snap.data(),
+    }));
+    const userId =
+      typeof submissions[0]?.userId === "string" ? submissions[0].userId : "";
+
+    if (!userId || submissions.some((submission) => submission.userId !== userId)) {
+      throw new HttpsError("invalid-argument", "Submissions must belong to the same user.");
+    }
+
+    const userSnap = await db.collection("users").doc(userId).get();
+    const userEmail =
+      userSnap.exists && typeof userSnap.data()?.email === "string"
+        ? userSnap.data()?.email.trim().toLowerCase()
+        : "";
+
+    if (!userEmail) {
+      throw new HttpsError("failed-precondition", "User email was not found.");
+    }
+
+    const emailContent = buildOwnershipContactEmail(submissions);
+
+    await sendTransactionalEmail({
+      attachments: emailContent.attachments,
+      email: userEmail,
+      html: emailContent.html,
+      subject: `Sonnor - confirmacao de titularidade (${emailContent.releaseTitle})`,
+      text: emailContent.text,
+    });
+
+    await Promise.all(
+      submissionRefs.map((ref: FirebaseFirestore.DocumentReference) =>
+        ref.update({
+          adminContactEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+          adminContactMessage: emailContent.text,
+          adminContactRequested: true,
+          adminContactSeen: false,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }),
+      ),
+    );
+
+    return {
+      email: userEmail,
+      success: true,
+    };
+  },
+);
 
 async function countApprovedReportsForUser(uid: string) {
   const reportsSnap = await db
@@ -1218,16 +1622,232 @@ export const setUserVerifiedOverride = onCall(async (request) => {
   return { success: true };
 });
 
-async function publishDueScheduledReleases() {
-  const now = admin.firestore.Timestamp.now();
-  const scheduled = await db.collection("albums").where("status", "==", "scheduled").get();
-  const dueAlbums = scheduled.docs.filter((album) => {
-    const releaseDate = getTimestampInMillis(album.data().releaseDate);
-    return releaseDate !== null && releaseDate <= now.toMillis();
-  });
+type LikeTargetType = "album" | "comment" | "post" | "track";
 
-  for (const album of dueAlbums) {
+const LIKE_TARGET_COLLECTIONS: Record<LikeTargetType, string> = {
+  album: "albums",
+  comment: "comments",
+  post: "posts",
+  track: "tracks",
+};
+
+async function toggleLikeForTarget(
+  uid: string,
+  targetType: LikeTargetType,
+  targetId: string,
+) {
+  const targetCollection = LIKE_TARGET_COLLECTIONS[targetType];
+
+  if (!targetId || !targetCollection) {
+    throw new HttpsError("invalid-argument", "Conteudo invalido.");
+  }
+
+  const targetRef = db.collection(targetCollection).doc(targetId);
+  const likeRef = db.collection("likes").doc(`${uid}_${targetType}_${targetId}`);
+
+  return db.runTransaction(async (transaction) => {
+    const [targetSnapshot, likeSnapshot] = await Promise.all([
+      transaction.get(targetRef),
+      transaction.get(likeRef),
+    ]);
+
+    if (!targetSnapshot.exists) {
+      throw new HttpsError("not-found", "Conteudo nao encontrado.");
+    }
+
+    const targetData = targetSnapshot.data() ?? {};
+    let ownsTarget = targetData.userId === uid;
+
+    if (!ownsTarget && targetType === "track" && typeof targetData.albumId === "string") {
+      const albumSnapshot = await transaction.get(
+        db.collection("albums").doc(targetData.albumId),
+      );
+      ownsTarget = albumSnapshot.data()?.userId === uid;
+    }
+
+    if (
+      targetType !== "comment"
+      && targetData.status !== "published"
+      && !ownsTarget
+    ) {
+      throw new HttpsError("permission-denied", "Conteudo indisponivel.");
+    }
+
+    const currentCount =
+      typeof targetData.likesCount === "number"
+        ? targetData.likesCount
+        : 0;
+
+    if (likeSnapshot.exists) {
+      transaction.delete(likeRef);
+      transaction.update(targetRef, { likesCount: Math.max(0, currentCount - 1) });
+      return { liked: false };
+    }
+
+    transaction.create(likeRef, {
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      targetId,
+      targetType,
+      userId: uid,
+    });
+    transaction.update(targetRef, { likesCount: currentCount + 1 });
+    return { liked: true };
+  });
+}
+
+export const toggleTrackLikeV2 = onCall(async (request) => {
+  const identity = await getCallableIdentity(request);
+  const uid = identity?.uid;
+  const targetId =
+    typeof request.data.trackId === "string" ? request.data.trackId.trim() : "";
+
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
+  }
+
+  return toggleLikeForTarget(uid, "track", targetId);
+});
+
+export const togglePostLikeV2 = onCall(async (request) => {
+  const identity = await getCallableIdentity(request);
+  const uid = identity?.uid;
+  const targetId =
+    typeof request.data.postId === "string" ? request.data.postId.trim() : "";
+
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
+  }
+
+  return toggleLikeForTarget(uid, "post", targetId);
+});
+
+export const toggleContentLike = onCall(async (request) => {
+  const identity = await getCallableIdentity(request);
+  const uid = identity?.uid;
+  const targetId =
+    typeof request.data.targetId === "string" ? request.data.targetId.trim() : "";
+  const targetType = request.data.targetType as LikeTargetType;
+
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
+  }
+
+  return toggleLikeForTarget(uid, targetType, targetId);
+});
+
+export const setUserFollow = onCall(async (request) => {
+  const identity = await getCallableIdentity(request);
+  const followerId = identity?.uid;
+  const followingId =
+    typeof request.data.followingId === "string"
+      ? request.data.followingId.trim()
+      : "";
+  const shouldFollow = request.data.follow === true;
+
+  if (!followerId) {
+    throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
+  }
+
+  if (!followingId || followingId === followerId) {
+    throw new HttpsError("invalid-argument", "Perfil invalido.");
+  }
+
+  const followerUserRef = db.collection("users").doc(followerId);
+  const followingUserRef = db.collection("users").doc(followingId);
+  const followRef = db.collection("follows").doc(`${followerId}_${followingId}`);
+  const followerRef = followingUserRef.collection("followers").doc(followerId);
+  const followingRef = followerUserRef.collection("following").doc(followingId);
+
+  return db.runTransaction(async (transaction) => {
+    const [followerUser, followingUser, existingFollow] = await Promise.all([
+      transaction.get(followerUserRef),
+      transaction.get(followingUserRef),
+      transaction.get(followRef),
+    ]);
+
+    if (!followerUser.exists || !followingUser.exists) {
+      throw new HttpsError("not-found", "Perfil nao encontrado.");
+    }
+
+    if (existingFollow.exists === shouldFollow) {
+      return { following: shouldFollow };
+    }
+
+    if (shouldFollow) {
+      const payload = {
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        followerId,
+        followingId,
+      };
+      transaction.create(followRef, payload);
+      transaction.set(followerRef, payload);
+      transaction.set(followingRef, payload);
+      transaction.update(followerUserRef, {
+        followingCount: admin.firestore.FieldValue.increment(1),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      transaction.update(followingUserRef, {
+        followersCount: admin.firestore.FieldValue.increment(1),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return { following: true };
+    }
+
+    transaction.delete(followRef);
+    transaction.delete(followerRef);
+    transaction.delete(followingRef);
+    transaction.update(followerUserRef, {
+      followingCount: Math.max(0, (followerUser.data()?.followingCount ?? 0) - 1),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    transaction.update(followingUserRef, {
+      followersCount: Math.max(0, (followingUser.data()?.followersCount ?? 0) - 1),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return { following: false };
+  });
+});
+
+export const deleteOwnedAlbum = onCall(async (request) => {
+  const identity = await getCallableIdentity(request);
+  const uid = identity?.uid;
+
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Tens de iniciar sessao.");
+  }
+
+  const albumId =
+    typeof request.data?.albumId === "string"
+      ? request.data.albumId.trim()
+      : "";
+
+  if (!albumId) {
+    throw new HttpsError("invalid-argument", "Pasta invalida.");
+  }
+
+  const albumSnapshot = await db.collection("albums").doc(albumId).get();
+
+  if (!albumSnapshot.exists) {
+    throw new HttpsError("not-found", "Pasta nao encontrada.");
+  }
+
+  const album = albumSnapshot.data() ?? {};
+
+  if (album.userId !== uid) {
+    throw new HttpsError("permission-denied", "So o dono pode apagar esta pasta.");
+  }
+
+  const result = await removeAlbumEverywhere(albumId, uid);
+
+  return { albumId, ...result };
+});
+
+async function publishAlbum(album: FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot) {
     const albumData = album.data();
+
+    if (!albumData) return;
+
+    const now = admin.firestore.Timestamp.now();
     const releaseDate = getTimestampInMillis(albumData.releaseDate) ?? now.toMillis();
     const tracks = await db.collection("tracks").where("albumId", "==", album.id).get();
     const publishBatch = db.batch();
@@ -1263,6 +1883,18 @@ async function publishDueScheduledReleases() {
 
       await reminder.ref.delete();
     }));
+}
+
+async function publishDueScheduledReleases() {
+  const now = admin.firestore.Timestamp.now();
+  const dueAlbums = await db
+    .collection("albums")
+    .where("status", "==", "scheduled")
+    .where("releaseDate", "<=", now)
+    .get();
+
+  for (const album of dueAlbums.docs) {
+    await publishAlbum(album);
   }
 }
 
@@ -1270,12 +1902,50 @@ export const publishScheduledReleases = onSchedule("every 1 minutes", async () =
   await publishDueScheduledReleases();
 });
 
+export const expireEventBanners = onSchedule("every 24 hours", async () => {
+  const now = admin.firestore.Timestamp.now();
+  const expiredBanners = await db
+    .collection("eventBanners")
+    .where("status", "==", "published")
+    .where("expiresAt", "<=", now)
+    .get();
+
+  await Promise.all(
+    expiredBanners.docs.map((banner) =>
+      banner.ref.update({
+        status: "expired",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }),
+    ),
+  );
+});
+
 export const publishDueReleasesNow = onCall(async (request) => {
-  if (!request.auth?.uid) {
+  const identity = await getCallableIdentity(request);
+
+  if (!identity?.uid) {
     throw new HttpsError("unauthenticated", "Sessao obrigatoria.");
   }
 
-  await publishDueScheduledReleases();
+  const albumId =
+    typeof request.data.albumId === "string" ? request.data.albumId.trim() : "";
+
+  if (!albumId) {
+    throw new HttpsError("invalid-argument", "Lancamento obrigatorio.");
+  }
+
+  const album = await db.collection("albums").doc(albumId).get();
+  const releaseDate = getTimestampInMillis(album.data()?.releaseDate);
+
+  if (!album.exists || album.data()?.status !== "scheduled") {
+    return { success: true };
+  }
+
+  if (!releaseDate || releaseDate > Date.now()) {
+    throw new HttpsError("failed-precondition", "O lancamento ainda nao chegou a zero.");
+  }
+
+  await publishAlbum(album);
   return { success: true };
 });
 
@@ -1302,6 +1972,28 @@ export const notifyMusicSubmissionDecision = onDocumentWritten(
       targetId: event.params.submissionId,
       targetType: "track",
       title: approved ? "Música aprovada" : "Música não aprovada",
+      userId: after.userId,
+    });
+  },
+);
+
+export const notifyEventRequestDecision = onDocumentWritten(
+  "eventRequests/{requestId}",
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+
+    if (!statusChanged(before, after) || typeof after?.userId !== "string") return;
+    if (!["approved", "rejected"].includes(after.status)) return;
+
+    await createInAppNotification({
+      body:
+        after.status === "approved"
+          ? "O teu banner de evento foi aprovado e fica visivel durante 1 semana."
+          : after.rejectionReason || "O teu pedido de evento foi recusado.",
+      targetId: event.params.requestId,
+      targetType: "post",
+      title: after.status === "approved" ? "Evento aprovado" : "Evento recusado",
       userId: after.userId,
     });
   },

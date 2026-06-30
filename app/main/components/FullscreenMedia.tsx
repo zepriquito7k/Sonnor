@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import Slider from "@react-native-community/slider";
 import { VideoView, useVideoPlayer } from "expo-video";
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Image,
@@ -13,6 +13,7 @@ import {
   View,
 } from "react-native";
 
+import MarqueeText from "../../../components/MarqueeText";
 import { useResponsive } from "../../..//utils/responsive";
 import { formatMediaTime, useSharedMediaProgress } from "./SharedMediaProgress";
 
@@ -112,9 +113,9 @@ export default function FullscreenMedia({
                 </TouchableOpacity>
 
                 <View style={styles.musicInside}>
-                  <Text style={styles.musicTitle}>
-                    {post?.musicName ?? "Nome da música"}
-                  </Text>
+                  <MarqueeText style={styles.musicTitle}>
+                    {post?.musicName ?? "Song name"}
+                  </MarqueeText>
                 </View>
 
                 <View style={styles.topSpacer} />
@@ -159,7 +160,7 @@ export default function FullscreenMedia({
                     onPress={() =>
                       Alert.alert(
                         "Report",
-                        "A opção de report estará disponível em breve.",
+                        "The report option will be available soon.",
                       )
                     }
                     activeOpacity={0.85}
@@ -245,7 +246,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  media: {},
+  media: {
+  },
   imageWrapper: {
     width: "100%",
     height: "100%",

@@ -61,7 +61,7 @@ export const emptyBoxImage =
 export const defaultUser: DefaultUser = {
   uid: "default-user",
   username: "",
-  displayName: "Perfil",
+  displayName: "Profile",
   bio: "",
   avatarUrl: "",
   bannerUrl: "",
@@ -80,35 +80,9 @@ export const defaultReleases: DefaultRelease[] = [];
 
 export const defaultPosts: DefaultPost[] = [];
 
-export const defaultHomeBoxes: DefaultImageBox[] = [
-  {
-    id: "continue-listening",
-    title: "Continuar",
-    subtitle: "Historico",
-    imageUrl: "",
-    description: "Historico real das musicas reproduzidas.",
-  },
-  {
-    id: "new-releases",
-    title: "Lancamentos",
-    subtitle: "Firebase tracks/albums",
-    imageUrl: "",
-    description: "Lancamentos reais publicados na app.",
-  },
-];
+export const defaultHomeBoxes: DefaultImageBox[] = [];
 
-export const defaultLibrarySections = [
-  {
-    title: "Musicas guardadas",
-    description: "Fallback ate existirem likes, playlists e historico no Firebase.",
-    items: ["liked tracks", "liked albums", "playlists", "recent plays"],
-  },
-  {
-    title: "Conteudo social",
-    description: "Fallback ate existirem posts guardados e follows reais.",
-    items: ["saved posts", "followed users", "shared content"],
-  },
-];
+export const defaultLibrarySections = [];
 
 export const defaultAppContent = {
   user: defaultUser,

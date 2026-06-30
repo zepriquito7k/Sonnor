@@ -10,6 +10,7 @@ export type NotificationType =
   | "admin_update"
   | "system";
 export type ReportStatus = "open" | "reviewed" | "dismissed" | "action_taken";
+export type EventRequestStatus = "pending" | "approved" | "rejected";
 export type VerificationStatus = "pending" | "approved" | "rejected";
 export type MusicSubmissionStatus =
   | "uploaded"
@@ -29,8 +30,9 @@ export type UserDocument = {
   username: string;
   displayName: string;
   bio?: string;
-  avatarUrl?: string;
-  bannerUrl?: string;
+    avatarUrl?: string;
+    avatarFallbackColor?: string;
+    bannerUrl?: string;
   backgroundUrl?: string;
   spotifyUrl?: string;
   shopUrl?: string;
@@ -171,6 +173,8 @@ export type PostDocument = {
   mediaUrl: string;
   thumbnailUrl?: string;
   mediaScale?: number;
+  mediaStageWidth?: number;
+  mediaStageHeight?: number;
   overlayMedia?: {
     id: string;
     mediaUrl: string;
@@ -185,6 +189,8 @@ export type PostDocument = {
   }[];
   linkedTrackId?: string;
   linkedTrackShortVideoUrl?: string;
+  linkedTrackClipStartSeconds?: number;
+  linkedTrackClipEndSeconds?: number;
   linkedAlbumId?: string;
   category?: string;
   status: ContentStatus;
@@ -305,6 +311,40 @@ export type ReportDocument = {
   createdAt: FirestoreDate;
   reviewedAt?: FirestoreDate;
   reviewedBy?: string;
+};
+
+export type EventRequestDocument = {
+  id: string;
+  userId: string;
+  title: string;
+  details: string;
+  linkUrl: string;
+  imageUrl: string;
+  mediaType?: MediaType;
+  status: EventRequestStatus;
+  adminName?: string;
+  rejectionReason?: string;
+  approvedBannerId?: string;
+  createdAt: FirestoreDate;
+  reviewedAt?: FirestoreDate;
+  updatedAt: FirestoreDate;
+};
+
+export type EventBannerDocument = {
+  id: string;
+  requestId?: string;
+  userId?: string;
+  title: string;
+  subtitle?: string;
+  imageUrl: string;
+  mediaType?: MediaType;
+  linkUrl: string;
+  visibility?: "public" | "followers";
+  status: "published" | "expired" | "removed";
+  startsAt: FirestoreDate;
+  expiresAt: FirestoreDate;
+  createdAt: FirestoreDate;
+  updatedAt: FirestoreDate;
 };
 
 export type VerificationRequestDocument = {

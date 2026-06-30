@@ -14,6 +14,7 @@ export type UploadKind =
   | "trackPreview"
   | "trackShortVideo"
   | "submissionAudio"
+  | "eventBanner"
   | "postMedia"
   | "postOverlayMedia"
   | "postThumbnail"
@@ -21,10 +22,12 @@ export type UploadKind =
   | "temp";
 
 type UploadTarget =
-  | { kind: "avatar" | "banner" | "background"; userId: string }
+  | { kind: "avatar"; userId: string; extension?: string }
+  | { kind: "banner" | "background"; userId: string }
   | { kind: "albumCover" | "albumBackground"; albumId: string }
   | { kind: "trackCover" | "trackAudio" | "trackPreview" | "trackShortVideo"; trackId: string }
   | { kind: "submissionAudio"; submissionId: string }
+  | { kind: "eventBanner"; eventId: string; extension?: string }
   | { kind: "postMedia"; postId: string; extension: string }
   | {
       kind: "postOverlayMedia";
@@ -44,7 +47,7 @@ type UploadTarget =
 export function getStoragePath(target: UploadTarget) {
   switch (target.kind) {
     case "avatar":
-      return storagePaths.userAvatar(target.userId);
+      return storagePaths.userAvatar(target.userId, target.extension);
     case "banner":
       return storagePaths.userBanner(target.userId);
     case "background":
@@ -63,6 +66,8 @@ export function getStoragePath(target: UploadTarget) {
       return storagePaths.trackShortVideo(target.trackId);
     case "submissionAudio":
       return storagePaths.submissionAudio(target.submissionId);
+    case "eventBanner":
+      return storagePaths.eventBanner(target.eventId, target.extension);
     case "postMedia":
       return storagePaths.postMedia(target.postId, target.extension);
     case "postOverlayMedia":
@@ -109,6 +114,8 @@ export async function uploadFileToStorage(
   const metadata =
     target.kind === "submissionAudio" || target.kind === "trackAudio"
       ? { contentType: "audio/mpeg" }
+      : target.kind === "avatar"
+        ? { contentType: getContentTypeFromExtension(target.extension ?? "jpg") }
       : target.kind === "trackCover"
         ? { contentType: "image/jpeg" }
         : target.kind === "trackShortVideo"
@@ -159,7 +166,7 @@ function uriToBlob(uri: string) {
     const request = new XMLHttpRequest();
 
     request.onload = () => resolve(request.response);
-    request.onerror = () => reject(new Error("Nao foi possivel ler o ficheiro selecionado."));
+    request.onerror = () => reject(new Error("Could not read the selected file."));
     request.responseType = "blob";
     request.open("GET", uri, true);
     request.send(null);

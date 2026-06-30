@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 
+import { pressableFeedback } from "../../components/pressFeedback";
 import {
   adminDeleteUser,
   listAdminUserProfiles,
@@ -34,7 +35,7 @@ export default function ManageUsersScreen() {
       setUsers(await listAdminUserProfiles());
     } catch (error) {
       console.log("LOAD ADMIN USERS ERROR:", error);
-      Alert.alert("Erro", "Nao foi possivel carregar utilizadores.");
+      Alert.alert("Error", "Could not carregar users.");
     } finally {
       setLoading(false);
     }
@@ -60,17 +61,17 @@ export default function ManageUsersScreen() {
 
   function confirmDelete(target: AdminUserListItem) {
     if (target.id === user?.uid) {
-      Alert.alert("Bloqueado", "Nao podes apagar a tua propria conta por aqui.");
+      Alert.alert("Blocked", "You cannot delete your own account here.");
       return;
     }
 
     Alert.alert(
-      "Apagar utilizador",
-      `Apagar ${target.displayName}? Isto remove conta, musicas, posts, albuns, reports, requests, mensagens e ficheiros.`,
+      "Delete user",
+      `Delete ${target.displayName}? This removes the account, songs, posts, albums, reports, requests, messages, and files.`,
       [
-        { text: "Cancelar", style: "cancel" },
+        { text: "Cancel", style: "cancel" },
         {
-          text: "Apagar",
+          text: "Delete",
           style: "destructive",
           onPress: () => handleDelete(target.id),
         },
@@ -83,23 +84,23 @@ export default function ManageUsersScreen() {
       setDeletingId(uid);
       await adminDeleteUser(uid);
       setUsers((current) => current.filter((item) => item.id !== uid));
-      Alert.alert("Apagado", "O utilizador e os dados ligados foram removidos.");
+      Alert.alert("Apagado", "O user e os dados ligados foram removidos.");
     } catch (error) {
       console.log("ADMIN DELETE USER ERROR:", error);
       const code = (error as { code?: string })?.code;
       const message = (error as { message?: string })?.message;
 
       if (code === "functions/permission-denied" || code === "permission-denied") {
-        Alert.alert("Sem permissao", "A tua conta precisa de permissao admin no servidor.");
+        Alert.alert("No permission", "Your account needs admin permission on the server.");
         return;
       }
 
       if (code === "functions/not-found") {
-        Alert.alert("Funcao em falta", "A funcao adminDeleteUserAccount ainda nao esta publicada no Firebase.");
+        Alert.alert("Missing function", "The adminDeleteUserAccount function is not published in Firebase yet.");
         return;
       }
 
-      Alert.alert("Erro", message || "Nao foi possivel apagar este utilizador.");
+      Alert.alert("Error", message || "Could not delete this user.");
     } finally {
       setDeletingId("");
     }
@@ -128,11 +129,11 @@ export default function ManageUsersScreen() {
       const code = (error as { code?: string })?.code;
 
       if (code === "functions/permission-denied" || code === "permission-denied") {
-        Alert.alert("Sem permissao", "A tua conta precisa de permissao admin no servidor.");
+        Alert.alert("No permission", "Your account needs admin permission on the server.");
         return;
       }
 
-      Alert.alert("Erro", "Nao foi possivel alterar o verificado.");
+      Alert.alert("Error", "Could not alterar o verificado.");
     } finally {
       setVerifyingId("");
     }
@@ -146,7 +147,7 @@ export default function ManageUsersScreen() {
             <Text style={styles.eyebrow}>Admin</Text>
             <Text style={styles.title}>Utilizadores</Text>
           </View>
-          <Pressable style={styles.refreshButton} onPress={loadUsers}>
+          <Pressable style={pressableFeedback(styles.refreshButton)} onPress={loadUsers}>
             <Ionicons name="refresh-outline" size={19} color="#fff" />
           </Pressable>
         </View>
@@ -156,7 +157,7 @@ export default function ManageUsersScreen() {
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Pesquisar nome, email ou uid"
+            placeholder="Search name, email ou uid"
             placeholderTextColor="#777"
             style={styles.searchInput}
             autoCapitalize="none"
@@ -164,7 +165,7 @@ export default function ManageUsersScreen() {
         </View>
 
         <Text style={styles.countText}>
-          {loading ? "A carregar..." : `${filteredUsers.length} utilizadores`}
+          {loading ? "Loading..." : `${filteredUsers.length} users`}
         </Text>
 
         {filteredUsers.map((item) => (
@@ -192,12 +193,12 @@ export default function ManageUsersScreen() {
                 {item.username ? `@${item.username}` : item.email || item.id}
               </Text>
               <Text style={styles.userStats}>
-                {item.followersCount} seguidores · {item.tracksCount} musicas
+                {item.followersCount} followers · {item.tracksCount} songs
               </Text>
             </View>
             <View style={styles.actionStack}>
               <Pressable
-                style={[styles.verifyButton, item.verificationOverride ? styles.verifyButtonActive : null]}
+                style={pressableFeedback([styles.verifyButton, item.verificationOverride ? styles.verifyButtonActive : null])}
                 onPress={() => handleToggleVerified(item)}
                 disabled={verifyingId === item.id}
               >
@@ -210,18 +211,18 @@ export default function ManageUsersScreen() {
                   {verifyingId === item.id
                     ? "..."
                     : item.verificationOverride
-                      ? "Remover"
+                      ? "Remove"
                       : "Verificar"}
                 </Text>
               </Pressable>
               <Pressable
-                style={styles.deleteButton}
+                style={pressableFeedback(styles.deleteButton)}
                 onPress={() => confirmDelete(item)}
                 disabled={deletingId === item.id}
               >
-                <Ionicons name="trash-outline" size={19} color="#ff8a8a" />
+                <Ionicons name="trash-outline" size={19} color="#fff" />
                 <Text style={styles.deleteText}>
-                  {deletingId === item.id ? "..." : "Apagar"}
+                  {deletingId === item.id ? "..." : "Delete"}
                 </Text>
               </Pressable>
             </View>
@@ -230,7 +231,7 @@ export default function ManageUsersScreen() {
 
         {!loading && filteredUsers.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>Nenhum utilizador encontrado.</Text>
+            <Text style={styles.emptyText}>Nenhum user encontrado.</Text>
           </View>
         ) : null}
       </ScrollView>
@@ -239,31 +240,173 @@ export default function ManageUsersScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#000" },
-  content: { paddingHorizontal: 20, paddingTop: 62, paddingBottom: 180 },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 22 },
-  eyebrow: { color: "#6F8FAF", fontSize: 12, fontWeight: "900", textTransform: "uppercase", marginBottom: 5 },
-  title: { color: "#fff", fontSize: 32, fontWeight: "900" },
-  refreshButton: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.08)" },
-  searchBox: { minHeight: 52, borderRadius: 18, paddingHorizontal: 14, flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "#111", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
-  searchInput: { flex: 1, color: "#fff", fontSize: 15 },
-  countText: { color: "#888", fontSize: 13, fontWeight: "700", marginTop: 14, marginBottom: 12 },
-  userCard: { minHeight: 86, borderRadius: 20, padding: 12, flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "rgba(255,255,255,0.055)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", marginBottom: 10 },
-  avatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: "#111" },
-  avatarFallback: { width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.08)" },
-  userInfo: { flex: 1 },
-  userName: { color: "#fff", fontSize: 16, fontWeight: "900" },
-  verifiedLine: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
-  verifyBadge: { width: 15, height: 15, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#2d7dff" },
-  verifiedText: { color: "#888", fontSize: 11, fontWeight: "900" },
-  userMeta: { color: "#aaa", fontSize: 12, marginTop: 3 },
-  userStats: { color: "#777", fontSize: 12, marginTop: 5 },
-  actionStack: { gap: 8 },
-  verifyButton: { minHeight: 40, borderRadius: 14, paddingHorizontal: 10, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(45,125,255,0.14)", borderWidth: 1, borderColor: "rgba(45,125,255,0.34)" },
-  verifyButtonActive: { backgroundColor: "#2d7dff", borderColor: "#2d7dff" },
-  verifyText: { color: "#fff", fontSize: 11, fontWeight: "900", marginTop: 2 },
-  deleteButton: { minHeight: 42, borderRadius: 14, paddingHorizontal: 12, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(218,52,52,0.14)", borderWidth: 1, borderColor: "rgba(255,90,90,0.28)" },
-  deleteText: { color: "#ff8a8a", fontSize: 12, fontWeight: "900", marginTop: 2 },
-  emptyCard: { borderRadius: 18, padding: 16, backgroundColor: "rgba(255,255,255,0.055)" },
-  emptyText: { color: "#999", fontSize: 14 },
+  root: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
+  content: {
+    paddingHorizontal: 20,
+    paddingTop: 62,
+    paddingBottom: 180,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 22,
+  },
+  eyebrow: {
+    color: "#E6E6E6",
+    fontSize: 12,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    marginBottom: 5,
+  },
+  title: {
+    color: "#fff",
+    fontSize: 32,
+    fontWeight: "900",
+  },
+  refreshButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  searchBox: {
+    minHeight: 52,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#111",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  searchInput: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 15,
+  },
+  countText: {
+    color: "#888",
+    fontSize: 13,
+    fontWeight: "700",
+    marginTop: 14,
+    marginBottom: 12,
+  },
+  userCard: {
+    minHeight: 86,
+    borderRadius: 20,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "rgba(255,255,255,0.055)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    marginBottom: 10,
+  },
+  avatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#111",
+  },
+  avatarFallback: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  userInfo: {
+    flex: 1,
+  },
+  userName: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  verifiedLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 4,
+  },
+  verifyBadge: {
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#2d7dff",
+  },
+  verifiedText: {
+    color: "#888",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  userMeta: {
+    color: "#aaa",
+    fontSize: 12,
+    marginTop: 3,
+  },
+  userStats: {
+    color: "#777",
+    fontSize: 12,
+    marginTop: 5,
+  },
+  actionStack: {
+    gap: 8,
+  },
+  verifyButton: {
+    minHeight: 40,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(45,125,255,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(45,125,255,0.34)",
+  },
+  verifyButtonActive: {
+    backgroundColor: "#2d7dff",
+    borderColor: "#2d7dff",
+  },
+  verifyText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "900",
+    marginTop: 2,
+  },
+  deleteButton: {
+    minHeight: 42,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(218,52,52,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,90,90,0.28)",
+  },
+  deleteText: {
+    color: "#ff8a8a",
+    fontSize: 12,
+    fontWeight: "900",
+    marginTop: 2,
+  },
+  emptyCard: {
+    borderRadius: 18,
+    padding: 16,
+    backgroundColor: "rgba(255,255,255,0.055)",
+  },
+  emptyText: {
+    color: "#999",
+    fontSize: 14,
+  },
 });

@@ -11,11 +11,15 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return signedIn()
-        && (
-          request.auth.token.admin == true
-          || request.auth.token.email in get(/databases/$(database)/documents/appConfig/admins).data.adminEmails
-        );
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    function ownsExistingDocument() {
+      return owns(resource.data.userId);
+    }
+
+    function keepsOwner() {
+      return request.resource.data.userId == resource.data.userId;
     }
 
     function approvedMusicSubmission(submissionId) {
@@ -26,89 +30,134 @@ service cloud.firestore {
         && request.resource.data.audioUrl == get(/databases/$(database)/documents/musicSubmissions/$(submissionId)).data.audioUrl;
     }
 
-    function onlyFollowerCountChanged() {
-      return signedIn()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["followersCount", "updatedAt"]);
+    function validContentTarget(targetType, targetId) {
+      return targetId is string
+        && (
+          (targetType == "post" && exists(/databases/$(database)/documents/posts/$(targetId)))
+          || (targetType == "track" && exists(/databases/$(database)/documents/tracks/$(targetId)))
+          || (targetType == "album" && exists(/databases/$(database)/documents/albums/$(targetId)))
+          || (targetType == "comment" && exists(/databases/$(database)/documents/comments/$(targetId)))
+          || (targetType == "user" && exists(/databases/$(database)/documents/users/$(targetId)))
+        );
     }
 
-    function onlyLikeCountChanged() {
+    function isThreadParticipant(threadId) {
       return signedIn()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["likesCount"])
-        && request.resource.data.likesCount is int
-        && request.resource.data.likesCount >= 0
-        && (
-          request.resource.data.likesCount == resource.data.likesCount + 1
-          || request.resource.data.likesCount == resource.data.likesCount - 1
-        );
+        && threadId is string
+        && request.auth.uid in get(/databases/$(database)/documents/messageThreads/$(threadId)).data.participantIds;
     }
 
     match /users/{userId} {
       allow read: if true;
-      allow create: if owns(userId);
-      allow update: if owns(userId) || isAdmin() || onlyFollowerCountChanged();
+      allow create: if owns(userId)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.verified == false
+        && request.resource.data.verificationOverride == false
+        && request.resource.data.followersCount == 0
+        && request.resource.data.followingCount == 0
+        && request.resource.data.tracksCount == 0
+        && request.resource.data.albumsCount == 0
+        && request.resource.data.postsCount == 0
+        && request.resource.data.likesCount == 0;
+      allow update: if isAdmin()
+        || (
+          owns(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "username", "displayName", "bio", "avatarUrl", "bannerUrl",
+            "backgroundUrl", "spotifyUrl", "shopUrl", "merchLogoUrl",
+            "merchName", "merchProducts", "merchGallery", "country", "city",
+            "birthDate", "interests", "profileHiddenFields", "settings", "updatedAt"
+          ])
+        );
       allow delete: if isAdmin();
 
       match /followers/{followerId} {
         allow read: if true;
-        allow create: if signedIn()
-          && request.auth.uid == followerId
-          && request.resource.data.followerId == request.auth.uid
-          && request.resource.data.followingId == userId
-          && request.auth.uid != userId;
-        allow delete: if signedIn() && request.auth.uid == followerId;
-        allow update: if false;
+        allow write: if false;
       }
 
       match /following/{followingId} {
         allow read: if owns(userId) || isAdmin();
-        allow create: if signedIn()
-          && request.auth.uid == userId
-          && request.resource.data.followerId == request.auth.uid
-          && request.resource.data.followingId == followingId
-          && request.auth.uid != followingId;
-        allow delete: if signedIn() && request.auth.uid == userId;
-        allow update: if false;
+        allow write: if false;
       }
     }
 
     match /albums/{albumId} {
-      allow read: if resource.data.status in ["published", "scheduled"] || owns(resource.data.userId) || isAdmin();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if owns(resource.data.userId) || isAdmin() || onlyLikeCountChanged();
+      allow read: if resource.data.status in ["published", "scheduled"] || ownsExistingDocument() || isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.likesCount == 0
+        && request.resource.data.playsCount == 0
+        && request.resource.data.commentsCount == 0;
+      allow update: if isAdmin()
+        || (
+          ownsExistingDocument()
+          && keepsOwner()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "id", "title", "slug", "type", "coverUrl", "backgroundUrl",
+            "releaseDate", "preReleaseEnabled", "preReleaseHighlightUntil",
+            "genres", "explicit", "trackIds", "updatedAt"
+          ])
+        );
       allow delete: if isAdmin();
     }
 
     match /tracks/{trackId} {
-      allow read: if resource.data.status == "published" || owns(resource.data.userId) || isAdmin();
+      allow read: if resource.data.status == "published" || ownsExistingDocument() || isAdmin();
       allow create: if isAdmin()
         || (
           signedIn()
           && request.resource.data.userId == request.auth.uid
+          && request.resource.data.likesCount == 0
+          && request.resource.data.playsCount == 0
+          && request.resource.data.commentsCount == 0
           && approvedMusicSubmission(request.resource.data.sourceSubmissionId)
         );
-      allow update: if owns(resource.data.userId) || isAdmin() || onlyLikeCountChanged();
+      allow update: if isAdmin()
+        || (
+          ownsExistingDocument()
+          && keepsOwner()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "id", "albumId", "title", "slug", "coverUrl", "previewUrl",
+            "shortVideoUrl", "durationSeconds", "featUserIds", "featNames",
+            "genre", "explicit", "lyrics", "releaseDate", "updatedAt"
+          ])
+        );
       allow delete: if isAdmin();
     }
 
     match /musicSubmissions/{submissionId} {
-      allow read: if owns(resource.data.userId) || isAdmin();
+      allow read: if ownsExistingDocument() || isAdmin();
       allow create: if signedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.mimeType == "audio/mpeg"
         && request.resource.data.fileExtension == "mp3";
       allow update: if isAdmin()
         || (
-          owns(resource.data.userId)
-          && request.resource.data.userId == resource.data.userId
+          ownsExistingDocument()
+          && keepsOwner()
           && (
             (
               resource.data.status in ["uploaded", "fingerprint_queued"]
               && request.resource.data.status == "fingerprint_queued"
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                "id", "audioUrl", "audioPath", "status", "updatedAt"
+              ])
             )
             || (
               resource.data.status == "approved"
               && request.resource.data.status == "completed"
               && request.resource.data.completedTrackId is string
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                "status", "completedTrackId", "updatedAt"
+              ])
+            )
+            || (
+              resource.data.status in ["uploaded", "fingerprint_queued", "approved"]
+              && request.resource.data.status == "cancelled"
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                "status", "cancelledAt", "updatedAt"
+              ])
             )
           )
         );
@@ -116,76 +165,112 @@ service cloud.firestore {
     }
 
     match /posts/{postId} {
-      allow read: if resource.data.status == "published" || owns(resource.data.userId) || isAdmin();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if owns(resource.data.userId) || isAdmin();
-      allow delete: if isAdmin();
+      allow read: if resource.data.status == "published" || ownsExistingDocument() || isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.likesCount == 0
+        && request.resource.data.commentsCount == 0
+        && request.resource.data.sharesCount == 0
+        && request.resource.data.reportsCount == 0;
+      allow update: if isAdmin()
+        || (
+          ownsExistingDocument()
+          && keepsOwner()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "id", "caption", "mediaType", "mediaUrl", "thumbnailUrl",
+            "mediaScale", "mediaStageWidth", "mediaStageHeight", "overlayMedia", "linkedTrackId",
+            "linkedTrackShortVideoUrl", "linkedTrackClipStartSeconds",
+            "linkedTrackClipEndSeconds", "linkedAlbumId", "category",
+            "updatedAt"
+          ])
+        );
+      allow delete: if ownsExistingDocument() || isAdmin();
     }
 
     match /comments/{commentId} {
       allow read: if true;
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if owns(resource.data.userId) || isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 2000
+        && request.resource.data.likesCount == 0
+        && validContentTarget(request.resource.data.targetType, request.resource.data.targetId);
+      allow update: if ownsExistingDocument()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["text"]);
+      allow delete: if ownsExistingDocument() || isAdmin();
     }
 
     match /likes/{likeId} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow delete: if owns(resource.data.userId) || isAdmin();
-      allow update: if false;
+      allow write: if false;
     }
 
     match /follows/{followId} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.followerId == request.auth.uid;
-      allow delete: if signedIn() && resource.data.followerId == request.auth.uid;
-      allow update: if false;
+      allow write: if false;
     }
 
     match /playlists/{playlistId} {
-      allow read: if resource.data.isPublic == true || owns(resource.data.userId) || isAdmin();
+      allow read: if resource.data.isPublic == true || ownsExistingDocument() || isAdmin();
       allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if owns(resource.data.userId) || isAdmin();
+      allow update: if isAdmin() || (ownsExistingDocument() && keepsOwner());
+      allow delete: if ownsExistingDocument() || isAdmin();
     }
 
     match /collections/{collectionId} {
-      allow read: if resource.data.isPublic == true || owns(resource.data.userId) || isAdmin();
+      allow read: if resource.data.isPublic == true || ownsExistingDocument() || isAdmin();
       allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if owns(resource.data.userId) || isAdmin();
+      allow update: if isAdmin() || (ownsExistingDocument() && keepsOwner());
+      allow delete: if ownsExistingDocument() || isAdmin();
     }
 
     match /recentPlays/{playId} {
-      allow read: if owns(resource.data.userId);
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow read: if ownsExistingDocument();
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && exists(/databases/$(database)/documents/tracks/$(request.resource.data.trackId));
       allow update, delete: if false;
     }
 
     match /notifications/{notificationId} {
-      allow read, update: if owns(resource.data.userId);
+      allow read: if ownsExistingDocument();
+      allow update: if ownsExistingDocument()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["read"]);
       allow create, delete: if isAdmin();
     }
 
     match /releaseReminders/{reminderId} {
-      allow read: if owns(resource.data.userId) || isAdmin();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow delete: if owns(resource.data.userId) || isAdmin();
+      allow read: if ownsExistingDocument() || isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && exists(/databases/$(database)/documents/albums/$(request.resource.data.albumId));
+      allow delete: if ownsExistingDocument() || isAdmin();
       allow update: if false;
     }
 
     match /messageThreads/{threadId} {
-      allow read, update: if signedIn() && request.auth.uid in resource.data.participantIds;
-      allow create: if signedIn() && request.auth.uid in request.resource.data.participantIds;
+      allow read: if signedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if signedIn()
+        && request.auth.uid in request.resource.data.participantIds
+        && request.resource.data.participantIds.size() >= 2
+        && request.resource.data.participantIds.size() <= 20;
+      allow update: if false;
       allow delete: if isAdmin();
     }
 
     match /messages/{messageId} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.senderId == request.auth.uid;
+      allow read: if isThreadParticipant(resource.data.threadId);
+      allow create: if signedIn()
+        && request.resource.data.senderId == request.auth.uid
+        && isThreadParticipant(request.resource.data.threadId);
       allow update, delete: if false;
     }
 
     match /reports/{reportId} {
-      allow create: if signedIn() && request.resource.data.reporterId == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.reporterId == request.auth.uid
+        && validContentTarget(request.resource.data.targetType, request.resource.data.targetId);
       allow read, update, delete: if isAdmin();
     }
 
@@ -202,18 +287,47 @@ service cloud.firestore {
 
     match /profileRequests/{requestId} {
       allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow read: if owns(resource.data.userId) || isAdmin();
+      allow read: if ownsExistingDocument() || isAdmin();
       allow update, delete: if isAdmin();
+    }
+
+    match /eventRequests/{requestId} {
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == "pending"
+        && request.resource.data.title is string
+        && request.resource.data.details is string
+        && request.resource.data.linkUrl is string
+        && request.resource.data.mediaType in ["image", "video"];
+      allow read: if ownsExistingDocument() || isAdmin();
+      allow update: if isAdmin()
+        || (
+          ownsExistingDocument()
+          && resource.data.status == "pending"
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "imageUrl", "updatedAt"
+          ])
+        );
+      allow delete: if isAdmin();
+    }
+
+    match /eventBanners/{bannerId} {
+      allow read: if resource.data.status == "published" || isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     match /verificationRequests/{requestId} {
       allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow read: if owns(resource.data.userId) || isAdmin();
+      allow read: if ownsExistingDocument() || isAdmin();
       allow update, delete: if isAdmin();
     }
 
+    match /appConfig/admins {
+      allow read, write: if isAdmin();
+    }
+
     match /appConfig/{docId} {
-      allow read: if true;
+      allow read: if docId == "public";
       allow write: if isAdmin();
     }
   }

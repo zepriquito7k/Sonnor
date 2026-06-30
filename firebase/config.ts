@@ -5,8 +5,10 @@ import { getFunctions } from "firebase/functions";
 // https://firebase.google.com/docs/web/setup#available-libraries
 
 const { getAuth, getReactNativePersistence, initializeAuth } =
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   require("@firebase/auth");
 const ReactNativeAsyncStorage =
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   require("@react-native-async-storage/async-storage").default;
 
 // Your web app's Firebase configuration

@@ -11,15 +11,28 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
 
-import { auth } from "./config";
+import { auth, functions } from "./config";
 import { db } from "./dataClient";
 import { firestoreCollections, firestorePaths } from "./paths";
 import type {
   ReleaseType,
   MusicSubmissionDocument,
+  UserDocument,
 } from "./schema";
 import { uploadUriToStorage } from "./storageClient";
+
+export type MusicReviewUserSummary = {
+  id: string;
+  displayName: string;
+  email: string;
+  followersCount: number;
+  tracksCount: number;
+  username: string;
+  verified: boolean;
+  verifiedBy: string;
+};
 
 export type SubmitMusicInput = {
   userId: string;
@@ -186,30 +199,63 @@ export async function getApprovedMusicSubmissions(userId: string) {
 }
 
 export async function getPendingMusicSubmissions() {
-  const snapshot = await getDocs(
-    query(
-      collection(db, firestoreCollections.musicSubmissions),
-      orderBy("createdAt", "desc"),
-      limit(80),
-    ),
+  try {
+    const snapshot = await getDocs(
+      query(
+        collection(db, firestoreCollections.musicSubmissions),
+        orderBy("createdAt", "desc"),
+        limit(80),
+      ),
+    );
+
+    return snapshot.docs
+      .map((submission) => ({
+        ...(submission.data() as MusicSubmissionDocument),
+        id: submission.id,
+      }))
+      .filter((submission) => {
+        if (submission.status === "completed" || submission.status === "cancelled" || submission.status === "rejected") {
+          return false;
+        }
+
+        if (submission.reviewBatchId && submission.reviewBatchAllowed === true) {
+          return false;
+        }
+
+        return ["fingerprint_queued", "manual_review", "uploaded", "approved"].includes(submission.status);
+      });
+  } catch (error) {
+    console.log("PENDING MUSIC SUBMISSIONS FALLBACK:", error);
+    return [];
+  }
+}
+
+export async function getMusicReviewUserSummaries(userIds: string[]) {
+  const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
+  const entries = await Promise.all(
+    uniqueUserIds.map(async (userId) => {
+      const snapshot = await getDoc(doc(db, firestorePaths.user(userId)));
+      const data = snapshot.exists()
+        ? (snapshot.data() as Partial<UserDocument>)
+        : {};
+
+      return [
+        userId,
+        {
+          id: userId,
+          displayName: data.displayName || data.username || "Sem name",
+          email: data.email || "",
+          followersCount: data.followersCount || 0,
+          tracksCount: data.tracksCount || 0,
+          username: data.username || "",
+          verified: data.verified === true,
+          verifiedBy: data.verifiedBy || "",
+        },
+      ] as const;
+    }),
   );
 
-  return snapshot.docs
-    .map((submission) => ({
-      ...(submission.data() as MusicSubmissionDocument),
-      id: submission.id,
-    }))
-    .filter((submission) => {
-      if (submission.status === "completed" || submission.status === "cancelled" || submission.status === "rejected") {
-        return false;
-      }
-
-      if (submission.reviewBatchId && submission.reviewBatchAllowed === true) {
-        return false;
-      }
-
-      return ["fingerprint_queued", "manual_review", "uploaded", "approved"].includes(submission.status);
-    });
+  return Object.fromEntries(entries) as Record<string, MusicReviewUserSummary>;
 }
 
 export async function markSubmissionForManualReview(submissionId: string) {
@@ -263,6 +309,26 @@ export async function allowMusicSubmissionBatch(
       }),
     ),
   );
+}
+
+export async function requestMusicOwnershipContact(
+  submissions: MusicSubmissionDocument[],
+) {
+  const sendOwnershipEmail = httpsCallable<
+    { submissionIds: string[] },
+    { email: string; success: boolean }
+  >(functions, "sendMusicOwnershipContactEmail");
+
+  return sendOwnershipEmail({
+    submissionIds: submissions.map((submission) => submission.id),
+  });
+}
+
+export async function markMusicOwnershipContactSeen(submissionId: string) {
+  await updateDoc(doc(db, firestorePaths.musicSubmission(submissionId)), {
+    adminContactSeen: true,
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function completeMusicSubmission(

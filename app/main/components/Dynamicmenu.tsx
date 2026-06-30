@@ -1,14 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
-import Slider from "@react-native-community/slider";
 import { BlurView } from "expo-blur";
 import { sendPasswordResetEmail } from "firebase/auth";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Image,
+  KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +20,9 @@ import {
 } from "react-native";
 
 import { usePlayer } from "../../../context/PlayerContext";
+import LinearSeekBar from "../../../components/LinearSeekBar";
+import MarqueeText from "../../../components/MarqueeText";
+import { useSuccessFeedback } from "../../../components/SuccessFeedback";
 import { isCurrentUserAdmin } from "../../../firebase/adminClient";
 import {
   deleteAccountWithCode,
@@ -26,18 +30,42 @@ import {
   sendDeleteAccountCode,
 } from "../../../firebase/auth";
 import { auth } from "../../../firebase/config";
-import { getProfileContent } from "../../../firebase/contentClient";
+import {
+  getHomeContent,
+  getProfileContent,
+  getReportableUsers,
+} from "../../../firebase/contentClient";
+import {
+  getMyMusicSubmissions,
+  markMusicOwnershipContactSeen,
+} from "../../../firebase/musicReviewClient";
 import {
   getWeeklyRejectedProfileRequests,
   requestDisplayNameChange,
-  sendProfileReport,
-  type ProfileRequest,
 } from "../../../firebase/profileRequests";
+import { createReport } from "../../../firebase/socialClient";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { getAvatarFallbackColor } from "../../../utils/avatarFallback";
 import { formatMediaTime } from "./SharedMediaProgress";
+
+type ReportMode = "music" | "user" | "other";
+type ReportOption = {
+  id: string;
+  type: "track" | "album" | "user";
+  title: string;
+  subtitle: string;
+  ownerId?: string;
+};
+type RejectedListItem = {
+  id: string;
+  title: string;
+  reason: string;
+  reviewer: string;
+};
 
 export default function Dynamicmenu() {
   const router = useRouter();
+  const { showSuccess } = useSuccessFeedback();
   const { user } = useCurrentUser();
   const { track, status, togglePlay, seek } = usePlayer();
 
@@ -54,14 +82,23 @@ export default function Dynamicmenu() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [dragProgress, setDragProgress] = useState<number | null>(null);
   const [settledProgress, setSettledProgress] = useState<number | null>(null);
+  const [reportMode, setReportMode] = useState<ReportMode>("music");
+  const [reportQuery, setReportQuery] = useState("");
+  const [reportOptions, setReportOptions] = useState<ReportOption[]>([]);
+  const [selectedReportOption, setSelectedReportOption] = useState<ReportOption | null>(null);
+  const [contactNotice, setContactNotice] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
   const [avatarUrl, setAvatarUrl] = useState("");
+  const [avatarFallbackColor, setAvatarFallbackColor] = useState("");
   const [profileName, setProfileName] = useState("");
   const [username, setUsername] = useState("");
   const [displayNameDraft, setDisplayNameDraft] = useState("");
   const [reportText, setReportText] = useState("");
   const [followersCount, setFollowersCount] = useState(0);
   const [tracks, setTracks] = useState<{ id: string; title: string; likesCount: number }[]>([]);
-  const [rejectedRequests, setRejectedRequests] = useState<ProfileRequest[]>([]);
+  const [rejectedRequests, setRejectedRequests] = useState<RejectedListItem[]>([]);
 
   const openCreateMenu = () => setMenuVisible(true);
   const closeCreateMenu = () => setMenuVisible(false);
@@ -101,6 +138,7 @@ export default function Dynamicmenu() {
 
     if (!user?.uid) {
       setAvatarUrl("");
+      setAvatarFallbackColor("");
       setProfileName("");
       setUsername("");
       setTracks([]);
@@ -114,12 +152,16 @@ export default function Dynamicmenu() {
           return;
         }
 
+        const userData = content.user as typeof content.user & {
+          avatarFallbackColor?: string;
+        };
         setAvatarUrl(content.user.avatarUrl || content.user.bannerUrl || "");
+        setAvatarFallbackColor(getAvatarFallbackColor(userData.avatarFallbackColor));
         setProfileName(
           content.user.username ||
             user.displayName ||
             content.user.displayName ||
-            "Perfil",
+            "Profile",
         );
         setUsername(content.user.username ? `@${content.user.username}` : "");
         setDisplayNameDraft(content.user.displayName || content.user.username || "");
@@ -127,17 +169,67 @@ export default function Dynamicmenu() {
         setTracks(
           content.tracks.map((item) => ({
             id: item.id,
-            title: typeof item.title === "string" ? item.title : "Musica",
+            title: typeof item.title === "string" ? item.title : "Music",
             likesCount: typeof item.likesCount === "number" ? item.likesCount : 0,
           })),
         );
       })
       .catch((error) => console.log("LOAD DYNAMIC AVATAR ERROR:", error));
 
-    getWeeklyRejectedProfileRequests(user.uid)
-      .then((requests) => {
-        if (mounted) {
-          setRejectedRequests(requests);
+    Promise.all([
+      getWeeklyRejectedProfileRequests(user.uid),
+      getMyMusicSubmissions(user.uid),
+    ])
+      .then(([requests, submissions]) => {
+        if (!mounted) {
+          return;
+        }
+
+        const deniedProfileRequests: RejectedListItem[] = requests.map((request) => ({
+          id: `profile-${request.id}`,
+          reason: request.rejectionReason || "No message.",
+          reviewer: request.adminName || "Admin",
+          title:
+            request.kind === "display_name"
+              ? "Name rejected"
+              : request.kind === "delete_album"
+                ? "Folder deletion request rejected"
+                : "Song deletion request rejected",
+        }));
+        const deniedMusicSubmissions: RejectedListItem[] = submissions
+          .filter((item) => item.status === "rejected")
+          .map((item) => {
+            const title =
+              item.reviewBatchTitle ||
+              item.declaredTitle ||
+              item.originalFileName ||
+              "Song submission";
+            const note = item.rightsReview?.note?.trim();
+
+            return {
+              id: `music-${item.id}`,
+              reason: note || "Sem mensagem.",
+              reviewer: "Admin",
+              title,
+            };
+          });
+
+        setRejectedRequests([...deniedProfileRequests, ...deniedMusicSubmissions]);
+
+        const pendingContact = submissions.find((item) => {
+          const data = item as unknown as Record<string, unknown>;
+          return data.adminContactRequested === true && data.adminContactSeen !== true;
+        });
+
+        if (pendingContact) {
+          const data = pendingContact as unknown as Record<string, unknown>;
+          setContactNotice({
+            id: pendingContact.id,
+            message:
+              typeof data.adminContactMessage === "string"
+                ? data.adminContactMessage
+                : "You have a review contact available in your email.",
+          });
         }
       })
       .catch((error) => console.log("LOAD DYNAMIC REQUESTS ERROR:", error));
@@ -157,7 +249,7 @@ export default function Dynamicmenu() {
       router.replace("/");
     } catch (error) {
       console.log("LOGOUT ERROR:", error);
-      Alert.alert("Erro", "Não foi possível terminar sessão agora.");
+      Alert.alert("Error", "Could not sign out right now.");
     } finally {
       setLogoutLoading(false);
     }
@@ -168,15 +260,131 @@ export default function Dynamicmenu() {
     router.push("/admin");
   }
 
+  const loadReportUsers = useCallback(async (searchText = "") => {
+    const reportUsers = await getReportableUsers(searchText);
+
+    setReportOptions((currentOptions) => {
+      const unique = new Map<string, ReportOption>();
+
+      currentOptions
+        .filter((item) => item.type !== "user")
+        .forEach((item) => {
+          unique.set(`${item.type}-${item.id}`, item);
+        });
+
+      reportUsers
+        .filter((item) => (item.uid || item.id) !== user?.uid)
+        .forEach((item) => {
+          const id = item.uid || item.id;
+
+          if (!id) {
+            return;
+          }
+
+          unique.set(`user-${id}`, {
+            id,
+            type: "user",
+            title: item.displayName || "Profile",
+            subtitle: "Artist",
+          });
+        });
+
+      return Array.from(unique.values());
+    });
+  }, [user?.uid]);
+
   function handleHelp() {
     closeUserMenu();
     openUrl("https://sonnor.app/help");
   }
 
-  function openReport() {
+  async function openReport() {
     closeUserMenu();
     setReportVisible(true);
+    setReportMode("music");
+    setReportQuery("");
+    setSelectedReportOption(null);
+
+    if (!user?.uid) {
+      return;
+    }
+
+    try {
+      const [home, reportUsers] = await Promise.all([
+        getHomeContent(user.uid),
+        getReportableUsers(""),
+      ]);
+      const tracksById = new Map(home.tracks.map((item) => [item.id, item]));
+      const recentTrackIds = home.recentPlays
+        .map((play) => ("trackId" in play && typeof play.trackId === "string" ? play.trackId : ""))
+        .filter(Boolean);
+      const recentMusic = recentTrackIds
+        .map((trackId) => tracksById.get(trackId))
+        .filter(Boolean)
+        .filter((item) => item!.userId !== user.uid)
+        .map((item) => ({
+          id: item!.id,
+          type: "track" as const,
+          title: item!.title || "Music",
+          subtitle: "Recent track",
+          ownerId: item!.userId,
+        }));
+      const allMusic = [
+        ...recentMusic,
+        ...home.tracks
+          .filter((item) => item.userId !== user.uid)
+          .map((item) => ({
+            id: item.id,
+            type: "track" as const,
+            title: item.title || "Music",
+            subtitle: "Track",
+            ownerId: item.userId,
+          })),
+        ...home.albums
+          .filter((item) => !("userId" in item) || item.userId !== user.uid)
+          .map((item) => ({
+            id: item.id,
+            type: "album" as const,
+            title: item.title || "Folder",
+            subtitle: `${item.type || "album"} · Folder`,
+            ownerId:
+              "userId" in item && typeof item.userId === "string"
+                ? item.userId
+                : undefined,
+          })),
+      ];
+      const usersForReport = reportUsers
+        .filter((item) => (item.uid || item.id) !== user.uid)
+        .map((item) => ({
+          id: item.uid || item.id,
+          type: "user" as const,
+          title: item.displayName || "Profile",
+          subtitle: "Artist",
+        }))
+        .filter((item) => Boolean(item.id));
+      const unique = new Map<string, ReportOption>();
+      [...allMusic, ...usersForReport].forEach((item) => {
+        unique.set(`${item.type}-${item.id}`, item);
+      });
+      setReportOptions(Array.from(unique.values()));
+    } catch (error) {
+      console.log("LOAD REPORT OPTIONS ERROR:", error);
+    }
   }
+
+  useEffect(() => {
+    if (!reportVisible || reportMode !== "user") {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      loadReportUsers(reportQuery).catch((error) => {
+        console.log("LOAD REPORT USERS ERROR:", error);
+      });
+    }, 220);
+
+    return () => clearTimeout(timeout);
+  }, [loadReportUsers, reportVisible, reportMode, reportQuery]);
 
   async function handleRequestDisplayName() {
     if (!user?.uid || !displayNameDraft.trim()) {
@@ -189,39 +397,75 @@ export default function Dynamicmenu() {
       requestedValue: displayNameDraft.trim(),
     });
     setPrivacyVisible(false);
-    Alert.alert("Pedido enviado", "O admin vai aprovar ou recusar a mudanca do nome.");
+    showSuccess({ message: "Request sent" });
   }
 
   async function handlePasswordReset() {
     if (!user?.email) {
-      Alert.alert("Email em falta", "Nao encontrei email para enviar a troca de senha.");
+      Alert.alert("Missing email", "Could not find an email to send the password reset.");
       return;
     }
 
     await sendPasswordResetEmail(auth, user.email);
     setPrivacyVisible(false);
-    Alert.alert("Email enviado", "Abre o teu email para mudar a senha.");
+    showSuccess({ message: "Email sent" });
   }
 
   async function handleSendReport() {
-    if (!user?.uid || !reportText.trim()) {
-      Alert.alert("Escreve o motivo", "Preciso do texto do report para enviar.");
+    if (!user?.uid) {
       return;
     }
 
-    await sendProfileReport({
-      reporterId: user.uid,
-      targetUserId: user.uid,
-      details: reportText.trim(),
-    });
+    if (reportMode === "other" && !reportText.trim()) {
+      Alert.alert("Enter the reason", "I need the report text before sending.");
+      return;
+    }
+
+    if (reportMode !== "other" && !selectedReportOption) {
+      Alert.alert("Choose an option", "Select the song, folder, or user.");
+      return;
+    }
+
+    if (reportMode === "other") {
+      await createReport({
+        reporterId: user.uid,
+        targetType: "comment",
+        targetId: user.uid,
+        reason: "Outro",
+        details: reportText.trim(),
+      });
+    } else if (selectedReportOption) {
+      await createReport({
+        reporterId: user.uid,
+        targetType: selectedReportOption.type,
+        targetId: selectedReportOption.id,
+        reason: reportMode === "user" ? "Denuncia de user" : "Denuncia de song/folder",
+        details:
+          reportText.trim() ||
+          `${selectedReportOption.title} · ${selectedReportOption.subtitle}`,
+      });
+    }
     setReportText("");
+    setReportQuery("");
+    setSelectedReportOption(null);
     setReportVisible(false);
-    Alert.alert("Report enviado", "O teu report ficou guardado para revisao.");
+    showSuccess({ message: "Report sent" });
   }
+
+  const visibleReportOptions = reportOptions.filter((item) => {
+    if (reportMode === "user" && item.type !== "user") return false;
+    if (reportMode === "music" && item.type === "user") return false;
+    if (item.type === "user" && item.id === user?.uid) return false;
+    if (item.ownerId && item.ownerId === user?.uid) return false;
+    const query = reportQuery.trim().toLowerCase();
+    return !query || `${item.title} ${item.subtitle}`.toLowerCase().includes(query);
+  });
+  const canSendReport =
+    reportMode === "other" ? Boolean(reportText.trim()) : Boolean(selectedReportOption);
 
   async function handleStartDeleteAccount() {
     if (!user?.email || deleteLoading) {
-      Alert.alert("Email em falta", "Nao encontrei email para confirmar esta conta.");
+      Alert.alert("Missing email", "Could not find an email to confirm this account.");
       return;
     }
 
@@ -229,10 +473,10 @@ export default function Dynamicmenu() {
       setDeleteLoading(true);
       await sendDeleteAccountCode(user.email);
       setDeleteAccountRequested(true);
-      Alert.alert("Codigo enviado", "Enviamos um codigo de 4 digitos para o teu email.");
+      showSuccess({ message: "Code sent" });
     } catch (error) {
       console.log("SEND DELETE ACCOUNT CODE ERROR:", error);
-      Alert.alert("Erro", "Nao foi possivel enviar o codigo agora.");
+      Alert.alert("Error", "Could not send the code right now.");
     } finally {
       setDeleteLoading(false);
     }
@@ -245,8 +489,8 @@ export default function Dynamicmenu() {
 
     const cleanDeleteCode = deleteCode.replace(/\D/g, "").slice(0, 4);
 
-    if (cleanDeleteCode.length !== 4 || deleteConfirmation.trim().toLowerCase() !== "apagar") {
-      Alert.alert("Confirmacao em falta", "Escreve o codigo de 4 digitos e a palavra apagar.");
+    if (cleanDeleteCode.length !== 4 || deleteConfirmation.trim().toLowerCase() !== "delete") {
+      Alert.alert("Missing confirmation", "Enter the 4-digit code and the word delete.");
       return;
     }
 
@@ -266,14 +510,14 @@ export default function Dynamicmenu() {
       console.log("DELETE ACCOUNT ERROR:", error);
       const message =
         error?.code === "functions/deadline-exceeded"
-          ? "Este codigo expirou. Pede outro codigo."
+          ? "This code expired. Request another code."
           : error?.code === "functions/permission-denied"
-            ? "O codigo esta incorreto ou ja houve tentativas demais."
+            ? "The code is incorrect or there have been too many attempts."
             : error?.code === "functions/not-found"
-              ? "Nao encontrei esse codigo. Pede outro codigo."
-              : error?.message || "Nao foi possivel apagar a conta agora.";
+              ? "Could not find esse code. Request another code."
+              : error?.message || "Could not delete the account right now.";
 
-      Alert.alert("Erro", message);
+      Alert.alert("Error", message);
     } finally {
       setDeleteLoading(false);
     }
@@ -315,12 +559,47 @@ export default function Dynamicmenu() {
     );
   }
 
+  function handleContactNoticePress() {
+    const notice = contactNotice;
+    setContactNotice(null);
+    if (notice) {
+      markMusicOwnershipContactSeen(notice.id).catch((error) =>
+        console.log("MARK CONTACT NOTICE SEEN ERROR:", error),
+      );
+    }
+    Linking.openURL("googlegmail://").catch(() => null);
+  }
+
   return (
     <View style={styles.container}>
       <BlurView intensity={70} tint="dark" style={styles.backgroundGlass} />
 
+      {contactNotice ? (
+        <TouchableOpacity
+          style={styles.contactNotice}
+          onPress={handleContactNoticePress}
+          activeOpacity={0.88}
+        >
+          <View style={styles.contactNoticeDot} />
+          <View style={styles.contactNoticeTextBlock}>
+            <Text style={styles.contactNoticeTitle}>Chat online</Text>
+            <Text style={styles.contactNoticeText} numberOfLines={1}>
+              Tap here to open and reply
+            </Text>
+          </View>
+          <Ionicons name="mail-outline" size={18} color="#000" />
+        </TouchableOpacity>
+      ) : null}
+
       <View style={styles.handleWrapper}>
-        <TouchableOpacity onPress={() => router.push("/main/home")}>
+        <TouchableOpacity
+          onPress={() =>
+            router.replace({
+              pathname: "/main/home",
+              params: { refresh: String(Date.now()) },
+            })
+          }
+        >
           <View style={styles.handle} />
         </TouchableOpacity>
       </View>
@@ -330,33 +609,36 @@ export default function Dynamicmenu() {
           <BlurView intensity={90} tint="dark" style={styles.popupGlass} />
 
           <View style={styles.popup}>
-            <Text style={styles.popupTitle}>Criar</Text>
+            <Text style={styles.popupTitle}>Create</Text>
 
             <TouchableOpacity
               style={styles.popupOption}
+              activeOpacity={0.62}
               onPress={() => {
                 closeCreateMenu();
                 router.push("/main/create/track");
               }}
             >
-              <Text style={styles.popupText}>Criar lancamento</Text>
+              <Text style={styles.popupText}>Create release</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.popupOption}
+              activeOpacity={0.62}
               onPress={() => {
                 closeCreateMenu();
                 router.push("/main/components/PopUpCreate/createPost");
               }}
             >
-              <Text style={styles.popupText}>Criar Post</Text>
+              <Text style={styles.popupText}>Create Post</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.popupCancel}
+              activeOpacity={0.62}
               onPress={closeCreateMenu}
             >
-              <Text style={styles.popupCancelText}>Cancelar</Text>
+              <Text style={styles.popupCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </Pressable>
@@ -372,40 +654,57 @@ export default function Dynamicmenu() {
               {avatarUrl ? (
                 <Image source={{ uri: avatarUrl }} style={styles.sideAvatar} />
               ) : (
-                <View style={[styles.sideAvatar, styles.avatarFallback]}>
-                  <Ionicons name="person-outline" size={22} color="#fff" />
+                <View
+                  style={[
+                    styles.sideAvatar,
+                    styles.avatarFallback,
+                    { backgroundColor: avatarFallbackColor },
+                  ]}
+                >
+                  <Ionicons name="person" size={24} color="#fff" />
                 </View>
               )}
               <View style={styles.sideNameBlock}>
-                <Text style={styles.sideName} numberOfLines={1}>{profileName || "Perfil"}</Text>
+                <Text style={styles.sideName} numberOfLines={1}>{profileName || "Profile"}</Text>
                 {username ? <Text style={styles.sideMeta} numberOfLines={1}>{username}</Text> : null}
               </View>
             </View>
 
-            <TouchableOpacity style={styles.sideRow} onPress={() => { closeUserMenu(); setPrivacyVisible(true); }}>
+            <TouchableOpacity style={styles.sideRow} activeOpacity={0.62} onPress={() => { closeUserMenu(); setPrivacyVisible(true); }}>
               <Ionicons name="shield-checkmark-outline" size={22} color="#fff" />
               <Text style={styles.sideText}>Privacidade e Seguranca</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.sideRow} onPress={() => { closeUserMenu(); setStatsVisible(true); }}>
+            <TouchableOpacity style={styles.sideRow} activeOpacity={0.62} onPress={() => { closeUserMenu(); setStatsVisible(true); }}>
               <Ionicons name="stats-chart-outline" size={22} color="#fff" />
-              <Text style={styles.sideText}>Estatisticas</Text>
+              <Text style={styles.sideText}>Stats</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.sideRow} onPress={openReport}>
+            <TouchableOpacity style={styles.sideRow} activeOpacity={0.62} onPress={openReport}>
               <Ionicons name="flag-outline" size={22} color="#fff" />
               <Text style={styles.sideText}>Report</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.sideRow} onPress={handleHelp}>
+            <TouchableOpacity style={styles.sideRow} activeOpacity={0.62} onPress={handleHelp}>
               <Ionicons name="help-circle-outline" size={22} color="#fff" />
               <Text style={styles.sideText}>Ajuda</Text>
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.sideRow}
+              activeOpacity={0.62}
+              onPress={() => {
+                closeUserMenu();
+                router.push("/main/events/request");
+              }}
+            >
+              <Ionicons name="calendar-outline" size={22} color="#fff" />
+              <Text style={styles.sideText}>Request event</Text>
+            </TouchableOpacity>
             {isAdmin ? (
-              <TouchableOpacity style={styles.sideRow} onPress={handleOpenAdmin}>
+              <TouchableOpacity style={styles.sideRow} activeOpacity={0.62} onPress={handleOpenAdmin}>
                 <Ionicons name="key-outline" size={22} color="#fff" />
                 <Text style={styles.sideText}>Admin</Text>
               </TouchableOpacity>
             ) : null}
 
-            <TouchableOpacity style={styles.logoutGrid} onPress={handleLogout}>
+            <TouchableOpacity style={styles.logoutGrid} activeOpacity={0.62} onPress={handleLogout}>
               <Ionicons name="log-out-outline" size={24} color="#ff7474" />
               <Text style={styles.logoutGridText}>{logoutLoading ? "A sair..." : "Logout"}</Text>
             </TouchableOpacity>
@@ -414,9 +713,18 @@ export default function Dynamicmenu() {
       </Modal>
 
       <Modal transparent visible={privacyVisible} animationType="fade">
-        <Pressable style={styles.panelModalBackdrop} onPress={() => setPrivacyVisible(false)}>
-          <Pressable style={styles.panelCard} onPress={(event) => event.stopPropagation()}>
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={18}
+          style={styles.keyboardRoot}
+        >
+          <Pressable style={styles.panelModalBackdrop} onPress={() => setPrivacyVisible(false)}>
+            <Pressable style={styles.panelCard} onPress={(event) => event.stopPropagation()}>
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={styles.privacyScrollContent}
+              >
               <Text style={styles.panelTitle}>Privacidade e Seguranca</Text>
               <TextInput
                 value={displayNameDraft}
@@ -425,85 +733,86 @@ export default function Dynamicmenu() {
                 placeholderTextColor="#777"
                 style={styles.input}
               />
-              <TouchableOpacity style={styles.primaryButton} onPress={handleRequestDisplayName}>
-                <Text style={styles.primaryButtonText}>Pedir mudanca do nome</Text>
+              <TouchableOpacity style={styles.primaryButton} activeOpacity={0.62} onPress={handleRequestDisplayName}>
+                <Text style={styles.primaryButtonText}>Pedir mudanca do name</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.secondaryAction} onPress={handlePasswordReset}>
+              <TouchableOpacity style={styles.secondaryAction} activeOpacity={0.62} onPress={handlePasswordReset}>
                 <Text style={styles.secondaryActionText}>Mudar senha</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.deleteAccountBox} onPress={handleStartDeleteAccount}>
-                <Ionicons name="trash-outline" size={24} color="#ff7474" />
+              <TouchableOpacity style={styles.deleteAccountBox} activeOpacity={0.62} onPress={handleStartDeleteAccount}>
+                <Ionicons name="trash-outline" size={24} color="#fff" />
                 <Text style={styles.deleteAccountText}>
-                  {deleteLoading && !deleteAccountRequested ? "A enviar codigo..." : "Apagar conta"}
+                  {deleteLoading && !deleteAccountRequested ? "Sending code..." : "Delete account"}
                 </Text>
               </TouchableOpacity>
 
               {deleteAccountRequested ? (
                 <View style={styles.deleteConfirmPanel}>
                   <Text style={styles.deleteHelpText}>
-                    Escreve o codigo de 4 digitos enviado para o teu email e depois escreve apagar.
+                    Enter the 4-digit code sent to your email, then enter delete.
                   </Text>
                   <TextInput
                     value={deleteCode}
                     onChangeText={(value) => setDeleteCode(value.replace(/\D/g, "").slice(0, 4))}
-                    placeholder="Codigo de 4 digitos"
+                    placeholder="4-digit code"
                     placeholderTextColor="#777"
                     keyboardType="number-pad"
                     maxLength={4}
-                    style={styles.input}
+                    style={[styles.input, styles.deleteInput]}
                   />
                   <TextInput
                     value={deleteConfirmation}
                     onChangeText={setDeleteConfirmation}
-                    placeholder="Escreve apagar"
+                    placeholder="Enter delete"
                     placeholderTextColor="#777"
                     autoCapitalize="none"
-                    style={styles.input}
+                    style={[styles.input, styles.deleteInput]}
                   />
-                  <TouchableOpacity style={styles.deleteFinalButton} onPress={handleConfirmDeleteAccount}>
+                  <TouchableOpacity style={styles.deleteFinalButton} activeOpacity={0.62} onPress={handleConfirmDeleteAccount}>
                     <Text style={styles.deleteFinalText}>
-                      {deleteLoading ? "A apagar..." : "Confirmar apagar conta"}
+                      {deleteLoading ? "Deleting..." : "Confirm account deletion"}
                     </Text>
                   </TouchableOpacity>
                 </View>
               ) : null}
 
-              <Text style={styles.panelSubtitle}>Pedidos recusados</Text>
+              <Text style={styles.panelSubtitle}>Rejected requests</Text>
               {rejectedRequests.length === 0 ? (
-                <Text style={styles.emptyText}>Nao ha pedidos recusados esta semana.</Text>
+                <Text style={styles.emptyText}>There are no rejected requests this week.</Text>
               ) : (
                 rejectedRequests.map((request) => (
                   <View key={request.id} style={styles.deniedBox}>
                     <Text style={styles.deniedTitle}>
-                      {request.kind === "display_name" ? "Nome Desaprovado" : "Musica Desaprovada"} - Motivo:
+                      {request.title} - Reason:
                     </Text>
                     <Text style={styles.deniedText}>
-                      {request.adminName || "Admin"} - {request.rejectionReason || "Sem mensagem."}
+                      {request.reason}
                     </Text>
                   </View>
                 ))
               )}
-            </ScrollView>
+              </ScrollView>
+            </Pressable>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal transparent visible={statsVisible} animationType="fade">
         <Pressable style={styles.panelModalBackdrop} onPress={() => setStatsVisible(false)}>
           <Pressable style={styles.panelCard} onPress={(event) => event.stopPropagation()}>
-            <Text style={styles.panelTitle}>Estatisticas</Text>
+            <Text style={styles.panelTitle}>Stats</Text>
             <View style={styles.simpleStatRow}>
-              <Text style={styles.simpleStatLabel}>Pessoas que seguiram</Text>
+              <Text style={styles.simpleStatLabel}>New followers</Text>
               <Text style={styles.simpleStatValue}>{followersCount}</Text>
             </View>
             <View style={styles.simpleStatRow}>
-              <Text style={styles.simpleStatLabel}>Pessoas que deixaram de seguir</Text>
+              <Text style={styles.simpleStatLabel}>Unfollowed</Text>
               <Text style={styles.simpleStatValue}>0</Text>
             </View>
-            <Text style={styles.panelSubtitle}>Musicas mais populares</Text>
+            <Text style={styles.panelSubtitle}>Most popular music</Text>
             {topTracks.length === 0 ? (
-              <Text style={styles.emptyText}>Ainda nao ha musicas com atividade.</Text>
+              <Text style={styles.emptyText}>There are no songs with activity yet.</Text>
             ) : (
               topTracks.map((item, index) => (
                 <Text key={item.id} style={styles.popularLine}>
@@ -519,16 +828,110 @@ export default function Dynamicmenu() {
         <Pressable style={styles.panelModalBackdrop} onPress={() => setReportVisible(false)}>
           <Pressable style={styles.panelCard} onPress={(event) => event.stopPropagation()}>
             <Text style={styles.panelTitle}>Report</Text>
-            <TextInput
-              value={reportText}
-              onChangeText={setReportText}
-              placeholder="Escreve o motivo"
-              placeholderTextColor="#777"
-              style={[styles.input, styles.textArea]}
-              multiline
-            />
-            <TouchableOpacity style={styles.primaryButton} onPress={handleSendReport}>
-              <Text style={styles.primaryButtonText}>Enviar report</Text>
+            <View style={styles.reportModeRow}>
+              {(["music", "user", "other"] as ReportMode[]).map((mode) => (
+                <TouchableOpacity
+                  key={mode}
+                  activeOpacity={0.62}
+                  style={[
+                    styles.reportModeButton,
+                    reportMode === mode ? styles.reportModeButtonActive : null,
+                  ]}
+                  onPress={() => {
+                    setReportMode(mode);
+                    setSelectedReportOption(null);
+                    setReportQuery("");
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.reportModeText,
+                      reportMode === mode ? styles.reportModeTextActive : null,
+                    ]}
+                  >
+                    {mode === "music" ? "Music" : mode === "user" ? "User" : "Other"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {reportMode === "other" ? (
+              <TextInput
+                value={reportText}
+                onChangeText={setReportText}
+                placeholder="Enter the reason"
+                placeholderTextColor="#777"
+                style={[styles.input, styles.textArea]}
+                multiline
+              />
+            ) : (
+              <>
+                <TextInput
+                  value={reportQuery}
+                  onChangeText={setReportQuery}
+                  placeholder={reportMode === "user" ? "Search any user" : "Search song or folder"}
+                  placeholderTextColor="#777"
+                  style={styles.input}
+                />
+                <ScrollView style={styles.reportList} keyboardShouldPersistTaps="handled">
+                  {visibleReportOptions.map((item) => (
+                    <TouchableOpacity
+                      key={`${item.type}-${item.id}`}
+                      activeOpacity={0.62}
+                      style={[
+                        styles.reportOption,
+                        selectedReportOption?.id === item.id &&
+                        selectedReportOption?.type === item.type
+                          ? styles.reportOptionActive
+                          : null,
+                      ]}
+                      onPress={() => setSelectedReportOption(item)}
+                    >
+                      <Ionicons
+                        name={
+                          item.type === "user"
+                            ? "person-outline"
+                            : item.type === "album"
+                              ? "albums-outline"
+                              : "musical-note-outline"
+                        }
+                        size={20}
+                        color="#fff"
+                      />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.reportOptionTitle} numberOfLines={1}>
+                          {item.title}
+                        </Text>
+                        <Text style={styles.reportOptionSubtitle} numberOfLines={1}>
+                          {item.subtitle}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                  {visibleReportOptions.length === 0 ? (
+                    <Text style={styles.emptyText}>
+                      {reportMode === "user"
+                        ? "Nenhum user encontrado."
+                        : "Sem songs ou folders recentes."}
+                    </Text>
+                  ) : null}
+                </ScrollView>
+                <TextInput
+                  value={reportText}
+                  onChangeText={setReportText}
+                  placeholder="Detalhe opcional"
+                  placeholderTextColor="#777"
+                  style={[styles.input, styles.textAreaSmall]}
+                  multiline
+                />
+              </>
+            )}
+            <TouchableOpacity
+              style={[styles.primaryButton, !canSendReport ? styles.primaryButtonDisabled : null]}
+              activeOpacity={0.62}
+              onPress={handleSendReport}
+              disabled={!canSendReport}
+            >
+              <Text style={styles.primaryButtonText}>Send report</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -539,14 +942,27 @@ export default function Dynamicmenu() {
         <View style={styles.headerRow}>
           <View style={styles.iconGroup}>
             <TouchableOpacity
-              style={styles.iconButton}
+              style={styles.avatarButton}
+              activeOpacity={0.62}
               onPress={() => router.push("/main/profile")}
             >
-              <Ionicons name="person" size={18} color="#fff" />
+              {avatarUrl ? (
+                <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+              ) : (
+                <View
+                  style={[
+                    styles.avatarFallbackFill,
+                    { backgroundColor: avatarFallbackColor },
+                  ]}
+                >
+                  <Ionicons name="person" size={18} color="#fff" />
+                </View>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.iconButton}
+              activeOpacity={0.62}
               onPress={() => router.push("/main/search")}
             >
               <Ionicons name="search-outline" size={18} color="#fff" />
@@ -555,7 +971,7 @@ export default function Dynamicmenu() {
             <TouchableOpacity
               style={styles.avatarButton}
               onPress={openUserMenu}
-              activeOpacity={0.85}
+              activeOpacity={0.62}
             >
               <Ionicons name="settings-outline" size={18} color="#fff" />
             </TouchableOpacity>
@@ -563,6 +979,7 @@ export default function Dynamicmenu() {
 
           <TouchableOpacity
             style={styles.createButton}
+            activeOpacity={0.62}
             onPress={openCreateMenu}
           >
             <Ionicons name="add" size={18} color="#fff" />
@@ -571,7 +988,7 @@ export default function Dynamicmenu() {
 
         {hasTrack ? (
           <View style={styles.playerCard}>
-            <TouchableOpacity onPress={() => router.push("/main/components/fullmidia")}>
+            <TouchableOpacity activeOpacity={0.62} onPress={() => router.push("/main/components/fullmidia")}>
               <View style={styles.cover}>
                 {track.cover ? (
                   <Image source={{ uri: track.cover }} style={styles.coverImage} />
@@ -584,16 +1001,17 @@ export default function Dynamicmenu() {
             <View style={styles.trackInfo}>
               <View style={styles.trackRow}>
                 <View style={styles.trackTextBlock}>
-                  <Text style={styles.trackTitle} numberOfLines={1}>
-                    {track.title ?? "Música"}
-                  </Text>
+                  <MarqueeText style={styles.trackTitle}>
+                    {track.title ?? "Music"}
+                  </MarqueeText>
                   <Text style={styles.trackArtist} numberOfLines={1}>
-                    {track.artist ?? "Artista"}
+                    {track.artist ?? "Artist"}
                   </Text>
                 </View>
 
                 <TouchableOpacity
                   style={styles.playButton}
+                  activeOpacity={0.62}
                   onPress={togglePlay}
                 >
                   <Ionicons
@@ -604,17 +1022,14 @@ export default function Dynamicmenu() {
                 </TouchableOpacity>
               </View>
 
-              <Slider
+              <LinearSeekBar
                 style={styles.slider}
-                minimumValue={0}
-                maximumValue={1}
                 value={progress}
-                minimumTrackTintColor="#fff"
-                maximumTrackTintColor="rgba(255,255,255,0.16)"
+                maximumTrackColor="rgba(255,255,255,0.16)"
                 onSlidingStart={() => setDragProgress(progress)}
                 onValueChange={setDragProgress}
                 onSlidingComplete={handleProgressComplete}
-                tapToSeek
+                trackHeight={5}
               />
 
               <View style={styles.timeRow}>
@@ -641,6 +1056,40 @@ const styles = StyleSheet.create({
   backgroundGlass: {
     ...StyleSheet.absoluteFillObject,
     zIndex: -1,
+  },
+  contactNotice: {
+    position: "absolute",
+    left: 18,
+    right: 18,
+    bottom: 116,
+    minHeight: 54,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#E6E6E6",
+    zIndex: 20,
+  },
+  contactNoticeDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: "#20e68a",
+  },
+  contactNoticeTextBlock: {
+    flex: 1,
+  },
+  contactNoticeTitle: {
+    color: "#000",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  contactNoticeText: {
+    color: "#333",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 2,
   },
   handleWrapper: {
     position: "absolute",
@@ -702,6 +1151,12 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
   },
+  avatarFallbackFill: {
+    alignItems: "center",
+    height: "100%",
+    justifyContent: "center",
+    width: "100%",
+  },
   createButton: {
     width: 34,
     height: 34,
@@ -742,6 +1197,7 @@ const styles = StyleSheet.create({
   },
   trackTextBlock: {
     flex: 1,
+    marginTop: 8,
     paddingRight: 12,
   },
   trackTitle: {
@@ -865,6 +1321,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 20,
   },
+  keyboardRoot: {
+    flex: 1,
+  },
   panelCard: {
     width: "100%",
     maxWidth: 460,
@@ -875,6 +1334,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#0c0c0c",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
+  },
+  privacyScrollContent: {
+    paddingBottom: 34,
   },
   panelTitle: {
     color: "#fff",
@@ -904,6 +1366,74 @@ const styles = StyleSheet.create({
     minHeight: 92,
     textAlignVertical: "top",
   },
+  textAreaSmall: {
+    minHeight: 66,
+    textAlignVertical: "top",
+  },
+  deleteInput: {
+    backgroundColor: "#f2f2f2",
+    borderColor: "#fff",
+    color: "#000",
+    fontWeight: "900",
+  },
+  reportModeRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+  reportModeButton: {
+    flex: 1,
+    minHeight: 38,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  reportModeButtonActive: {
+    backgroundColor: "#fff",
+    borderColor: "#fff",
+  },
+  reportModeText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  reportModeTextActive: {
+    color: "#000",
+  },
+  reportList: {
+    maxHeight: 220,
+    marginBottom: 10,
+  },
+  reportOption: {
+    minHeight: 58,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(255,255,255,0.055)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    marginBottom: 8,
+  },
+  reportOptionActive: {
+    borderColor: "#fff",
+    backgroundColor: "rgba(255,255,255,0.14)",
+  },
+  reportOptionTitle: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  reportOptionSubtitle: {
+    color: "#aaa",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 3,
+  },
   primaryButton: {
     minHeight: 46,
     borderRadius: 14,
@@ -911,6 +1441,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#fff",
     marginBottom: 10,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.35,
   },
   primaryButtonText: {
     color: "#000",

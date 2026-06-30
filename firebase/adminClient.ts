@@ -1,8 +1,6 @@
 import {
   addDoc,
-  doc,
   collection,
-  getDoc,
   getDocs,
   limit,
   orderBy,
@@ -14,7 +12,6 @@ import { httpsCallable } from "firebase/functions";
 
 import { auth, functions } from "./config";
 import { db } from "./dataClient";
-import { defaultAppContent } from "./defaultContent";
 import { firestoreCollections } from "./paths";
 import type { UserDocument } from "./schema";
 
@@ -59,7 +56,7 @@ async function listCollection(collectionName: string, fallback: string[]) {
 }
 
 export function listAdminUsers() {
-  return listCollection(firestoreCollections.users, [defaultAppContent.user.displayName]);
+  return listCollection(firestoreCollections.users, []);
 }
 
 export async function listAdminUserProfiles(): Promise<AdminUserListItem[]> {
@@ -74,7 +71,7 @@ export async function listAdminUserProfiles(): Promise<AdminUserListItem[]> {
       return {
         id: docSnap.id,
         avatarUrl: data.avatarUrl || data.bannerUrl || "",
-        displayName: data.displayName || data.username || data.email || "Sem nome",
+        displayName: data.displayName || data.username || data.email || "Sem name",
         email: data.email || "",
         followersCount: data.followersCount || 0,
         tracksCount: data.tracksCount || 0,
@@ -124,7 +121,7 @@ function waitForSignedInUser() {
 
     const timeout = setTimeout(() => {
       unsubscribe();
-      reject(new Error("Sessao expirada. Faz login outra vez antes de usar o admin."));
+      reject(new Error("Session expired. Faz login outra vez antes de usar o admin."));
     }, 5000);
 
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
@@ -140,22 +137,16 @@ function waitForSignedInUser() {
 }
 
 export function listAdminPosts() {
-  return listCollection(
-    firestoreCollections.posts,
-    defaultAppContent.posts.map((post) => post.caption),
-  );
+  return listCollection(firestoreCollections.posts, []);
 }
 
 export function listAdminReleases() {
-  return listCollection(
-    firestoreCollections.albums,
-    defaultAppContent.releases.map((release) => release.title),
-  );
+  return listCollection(firestoreCollections.albums, []);
 }
 
 export function listAdminVerificationRequests() {
   return listCollection(firestoreCollections.verificationRequests, [
-    "No verification requests yet",
+    "Sem pedidos de verificacao",
   ]);
 }
 
@@ -171,46 +162,45 @@ export async function listAdminReports() {
 
     return snapshot.docs.map((docSnap) => {
       const data = docSnap.data();
-      const reason = typeof data.reason === "string" ? data.reason : "sem motivo";
-      const targetType = typeof data.targetType === "string" ? data.targetType : "conteudo";
+      const reason = typeof data.reason === "string" ? data.reason : "no reason";
+      const targetType = typeof data.targetType === "string" ? data.targetType : "content";
       const status = typeof data.status === "string" ? data.status : "open";
 
       return `${status.toUpperCase()} - ${targetType}: ${reason} (${docSnap.id})`;
     });
   } catch (error) {
     console.log("ADMIN REPORTS FALLBACK:", error);
-    return ["Sem permissao para ler reports ou nenhuma regra publicada"];
+    return ["No permission para ler reports ou nenhuma regra publicada"];
   }
 }
 
 export async function isCurrentUserAdmin() {
-  const user = auth.currentUser;
+  try {
+    const user = auth.currentUser;
 
-  if (!user) {
+    if (!user) {
+      return false;
+    }
+
+    const token = await user.getIdTokenResult();
+
+    if (token.claims.admin === true) {
+      return true;
+    }
+
+    const getCurrentAdminStatus = httpsCallable<
+      { idToken: string },
+      { admin: boolean; claimSynced?: boolean }
+    >(functions, "getCurrentAdminStatus");
+    const result = await getCurrentAdminStatus({ idToken: await user.getIdToken() });
+
+    if (result.data.admin === true && result.data.claimSynced === true) {
+      await user.getIdToken(true);
+    }
+
+    return result.data.admin === true;
+  } catch (error) {
+    console.log("ADMIN STATUS FALLBACK:", error);
     return false;
   }
-
-  const token = await user.getIdTokenResult();
-
-  if (token.claims.admin === true) {
-    return true;
-  }
-
-  const adminsSnapshot = await getDoc(doc(db, "appConfig", "admins"));
-  const adminEmails = adminsSnapshot.data()?.adminEmails;
-
-  if (typeof user.email !== "string") {
-    return false;
-  }
-
-  const email = user.email.toLowerCase();
-
-  return (
-    Array.isArray(adminEmails) &&
-    adminEmails.some(
-      (adminEmail) =>
-        typeof adminEmail === "string" &&
-        adminEmail.trim().toLowerCase() === email,
-    )
-  );
 }

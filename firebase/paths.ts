@@ -16,6 +16,8 @@ export const firestoreCollections = {
   messages: "messages",
   reports: "reports",
   adminDeletionRequests: "adminDeletionRequests",
+  eventBanners: "eventBanners",
+  eventRequests: "eventRequests",
   profileRequests: "profileRequests",
   verificationRequests: "verificationRequests",
   appConfig: "appConfig",
@@ -38,6 +40,8 @@ export const firestorePaths = {
   messageThread: (threadId: string) => `messageThreads/${threadId}`,
   message: (messageId: string) => `messages/${messageId}`,
   report: (reportId: string) => `reports/${reportId}`,
+  eventBanner: (bannerId: string) => `eventBanners/${bannerId}`,
+  eventRequest: (requestId: string) => `eventRequests/${requestId}`,
   profileRequest: (requestId: string) => `profileRequests/${requestId}`,
   verificationRequest: (requestId: string) =>
     `verificationRequests/${requestId}`,
@@ -45,7 +49,8 @@ export const firestorePaths = {
 } as const;
 
 export const storagePaths = {
-  userAvatar: (userId: string) => `users/${userId}/avatar/avatar.jpg`,
+  userAvatar: (userId: string, extension = "jpg") =>
+    `users/${userId}/avatar/avatar.${extension}`,
   userBanner: (userId: string) => `users/${userId}/banner/banner.jpg`,
   userBackground: (userId: string) =>
     `users/${userId}/background/background.jpg`,
@@ -62,6 +67,8 @@ export const storagePaths = {
   postOverlayMedia: (postId: string, overlayId: string, extension: string) =>
     `posts/${postId}/overlays/${overlayId}.${extension}`,
   postThumbnail: (postId: string) => `posts/${postId}/thumbnail.jpg`,
+  eventBanner: (eventId: string, extension = "jpg") =>
+    `events/${eventId}/banner.${extension}`,
   collectionCover: (collectionId: string) =>
     `collections/${collectionId}/cover.jpg`,
   messageMedia: (threadId: string, messageId: string, extension: string) =>

@@ -3,7 +3,7 @@ import { listAdminReports } from "../../firebase/adminClient";
 import { useAsyncData } from "../../hooks/useAsyncData";
 
 export default function ManageReportsScreen() {
-  const { data } = useAsyncData(listAdminReports, ["A carregar reports..."]);
+  const { data } = useAsyncData(listAdminReports, ["Loading reports..."]);
 
   return (
     <AppScreen
@@ -12,7 +12,7 @@ export default function ManageReportsScreen() {
       sections={[
         {
           title: "Reports queue",
-          description: "Reports reais vindos do Firestore para revisão.",
+          description: "Real reports from Firestore for review.",
           items: data,
         },
       ]}

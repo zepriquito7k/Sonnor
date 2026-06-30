@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { Audio } from "expo-av";
 import { useRouter } from "expo-router";
 import { VideoView, useVideoPlayer } from "expo-video";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -15,6 +16,7 @@ import {
   View,
 } from "react-native";
 import { doc, getDoc } from "firebase/firestore";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
 import { buildReleaseRoute, findMusicMatch } from "../../constants/musicLibrary";
 import { usePlayer, type Track } from "../../context/PlayerContext";
@@ -23,8 +25,10 @@ import { deletePost } from "../../firebase/contentMutations";
 import { defaultUser } from "../../firebase/defaultContent";
 import { db } from "../../firebase/dataClient";
 import { updateSearchHistory } from "../../firebase/settingsClient";
+import { createLike, createReport } from "../../firebase/socialClient";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useResponsive } from "../../utils/responsive";
+import AnimatedSoundWave from "./components/AnimatedSoundWave";
 
 type ResultItem = {
   id: number | string;
@@ -48,6 +52,8 @@ type CategoryItem = {
   id: number;
   title: string;
   cover: string;
+  iconColor: string;
+  icon: React.ComponentProps<typeof Ionicons>["name"];
   isAll?: boolean;
 };
 
@@ -58,8 +64,13 @@ type PostItem = {
   caption: string;
   image: string;
   mediaScale: number;
+  mediaStageWidth: number;
+  mediaStageHeight: number;
   category: string;
   likesLabel: string;
+  linkedTrackAudioUrl?: string;
+  linkedTrackClipEndSeconds?: number;
+  linkedTrackClipStartSeconds?: number;
   type?: "image" | "video";
   avatar?: string;
   mediaUrls: string[];
@@ -71,6 +82,7 @@ type PostItem = {
 type SearchOverlayItem = {
   id: string;
   mediaUrl: string;
+  mediaType: "image";
   x: number;
   y: number;
   scale: number;
@@ -79,6 +91,86 @@ type SearchOverlayItem = {
   stageWidth: number;
   stageHeight: number;
 };
+
+const LEGACY_POST_STAGE_WIDTH = 482;
+const LEGACY_POST_STAGE_HEIGHT = 1000;
+
+function usePostClipAudio(post: PostItem, isActive: boolean) {
+  const soundRef = useRef<Audio.Sound | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let stopTimer: ReturnType<typeof setTimeout> | null = null;
+    const clipStart = post.linkedTrackClipStartSeconds ?? 0;
+    const clipEnd = post.linkedTrackClipEndSeconds ?? 0;
+
+    async function playLinkedClip() {
+      if (!isActive || !post.linkedTrackAudioUrl || clipEnd - clipStart < 1) {
+        return;
+      }
+
+      try {
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: post.linkedTrackAudioUrl },
+          {
+            positionMillis: clipStart * 1000,
+            progressUpdateIntervalMillis: 200,
+            shouldPlay: true,
+          },
+        );
+
+        if (cancelled) {
+          await sound.unloadAsync().catch(() => null);
+          return;
+        }
+
+        soundRef.current = sound;
+        stopTimer = setTimeout(() => {
+          void sound.pauseAsync().catch(() => null);
+          void sound.setPositionAsync(clipStart * 1000).catch(() => null);
+        }, (clipEnd - clipStart) * 1000);
+        sound.setOnPlaybackStatusUpdate((nextStatus) => {
+          if (nextStatus.isLoaded && nextStatus.positionMillis >= clipEnd * 1000) {
+            void sound.pauseAsync().catch(() => null);
+            void sound.setPositionAsync(clipStart * 1000).catch(() => null);
+          }
+        });
+      } catch (error) {
+        console.log("PLAY SEARCH POST CLIP ERROR:", error);
+      }
+    }
+
+    void playLinkedClip();
+
+    return () => {
+      cancelled = true;
+      if (stopTimer) {
+        clearTimeout(stopTimer);
+      }
+      const sound = soundRef.current;
+      soundRef.current = null;
+      sound?.setOnPlaybackStatusUpdate(null);
+      void sound?.unloadAsync().catch(() => null);
+    };
+  }, [
+    isActive,
+    post.id,
+    post.linkedTrackAudioUrl,
+    post.linkedTrackClipEndSeconds,
+    post.linkedTrackClipStartSeconds,
+  ]);
+}
+
+function hasConfirmedPostMusic(post: object) {
+  const data = post as Record<string, unknown>;
+  return (
+    typeof data.linkedTrackId === "string" &&
+    data.linkedTrackId.trim().length > 0 &&
+    typeof data.linkedTrackClipStartSeconds === "number" &&
+    typeof data.linkedTrackClipEndSeconds === "number" &&
+    data.linkedTrackClipEndSeconds - data.linkedTrackClipStartSeconds >= 1
+  );
+}
 
 type RecentItem = {
   id: number | string;
@@ -110,20 +202,24 @@ function normalizeSearch(value: string) {
   return value.trim().toLowerCase();
 }
 
+function truncateSearchTitle(value: string) {
+  return value.length > 15 ? `${value.slice(0, 15)}...` : value;
+}
+
 function formatLikesLabel(count?: number | null) {
   const safeCount = typeof count === "number" && count >= 0 ? count : 0;
 
   if (safeCount >= 1000000) {
     const value = safeCount / 1000000;
-    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}M curtidas`;
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}M likes`;
   }
 
   if (safeCount >= 1000) {
     const value = safeCount / 1000;
-    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}k curtidas`;
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}k likes`;
   }
 
-  return `${safeCount} curtidas`;
+  return `${safeCount} likes`;
 }
 
 function buildRandomPostGrid(posts: PostItem[], seed: number) {
@@ -142,10 +238,12 @@ function MediaTile({
   uri,
   style,
   icon = "image-outline",
+  iconColor = "#777",
 }: {
   uri: string;
   style: object;
   icon?: keyof typeof Ionicons.glyphMap;
+  iconColor?: string;
 }) {
   if (hasImage(uri)) {
     return <Image source={{ uri }} style={style} />;
@@ -153,7 +251,7 @@ function MediaTile({
 
   return (
     <View style={[style, styles.mediaFallback]}>
-      <Ionicons name={icon} size={22} color="#777" />
+      <Ionicons name={icon} size={22} color={iconColor} />
     </View>
   );
 }
@@ -212,6 +310,7 @@ function PostMediaTile({
       <Image
         source={{ uri: post.image }}
         style={[style, { transform: [{ scale: post.mediaScale || 1 }] }]}
+        resizeMode={contentFit}
       />
     );
   }
@@ -263,66 +362,136 @@ function SearchPostOverlayLayer({ post }: { post: PostItem }) {
   );
 }
 
+function FullscreenPostComposition({
+  isActive,
+  post,
+}: {
+  isActive: boolean;
+  post: PostItem;
+}) {
+  usePostClipAudio(post, isActive);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const sourceStageWidth =
+    post.mediaStageWidth ||
+    post.overlayMedia[0]?.stageWidth ||
+    LEGACY_POST_STAGE_WIDTH;
+  const sourceStageHeight =
+    post.mediaStageHeight ||
+    post.overlayMedia[0]?.stageHeight ||
+    LEGACY_POST_STAGE_HEIGHT;
+  const compositionScale = Math.max(
+    stageSize.width / sourceStageWidth || 1,
+    stageSize.height / sourceStageHeight || 1,
+  );
+  const compositionWidth = sourceStageWidth * compositionScale;
+  const compositionHeight = sourceStageHeight * compositionScale;
+
+  return (
+    <View
+      pointerEvents="none"
+      style={styles.fullscreenPostStage}
+      onLayout={(event) => setStageSize(event.nativeEvent.layout)}
+    >
+      <View
+        style={[
+          styles.fullscreenPostComposition,
+          {
+            width: compositionWidth,
+            height: compositionHeight,
+            left: (stageSize.width - compositionWidth) / 2,
+            top: (stageSize.height - compositionHeight) / 2,
+          },
+        ]}
+      >
+        <PostMediaTile
+          post={post}
+          style={styles.reelMedia}
+          contentFit="contain"
+        />
+        <SearchPostOverlayLayer post={post} />
+      </View>
+    </View>
+  );
+}
+
 const CATEGORIES: CategoryItem[] = [
   {
     id: 1,
-    title: "Ver todas",
+    title: "Show all",
     cover: "",
+    icon: "grid-outline",
+    iconColor: "#F2F2F2",
     isAll: true,
   },
   {
     id: 2,
-    title: "Biblioteca",
+    title: "Library",
     cover: "",
+    icon: "library-outline",
+    iconColor: "#C9E7FF",
     isAll: true,
   },
   {
     id: 3,
     title: "Pop",
     cover: "",
+    icon: "star-outline",
+    iconColor: "#FFE4A8",
   },
   {
     id: 4,
     title: "R&B",
     cover: "",
+    icon: "heart-outline",
+    iconColor: "#FFC7DD",
   },
   {
     id: 5,
     title: "Rock",
     cover: "",
+    icon: "flash-outline",
+    iconColor: "#FFD1B8",
   },
   {
     id: 6,
     title: "Eletronica",
     cover: "",
+    icon: "pulse-outline",
+    iconColor: "#BDEEFF",
   },
   {
     id: 7,
     title: "Jazz",
     cover: "",
+    icon: "cafe-outline",
+    iconColor: "#E8D0B8",
   },
   {
     id: 8,
     title: "Lo-fi",
     cover: "",
+    icon: "moon-outline",
+    iconColor: "#D9D0FF",
   },
   {
     id: 9,
     title: "Classica",
     cover: "",
+    icon: "musical-notes-outline",
+    iconColor: "#FFF0C7",
   },
 ];
 
 const MORE_CATEGORIES: CategoryItem[] = [
-  { id: 10, title: "Rap", cover: "" },
-  { id: 11, title: "Afro", cover: "" },
-  { id: 12, title: "Trap", cover: "" },
-  { id: 13, title: "Funk", cover: "" },
-  { id: 14, title: "Soul", cover: "" },
-  { id: 15, title: "Indie", cover: "" },
-  { id: 16, title: "House", cover: "" },
-  { id: 17, title: "Techno", cover: "" },
-  { id: 18, title: "Reggaeton", cover: "" },
+  { id: 10, title: "Rap", cover: "", icon: "mic-outline", iconColor: "#D8D8D8" },
+  { id: 11, title: "Afro", cover: "", icon: "earth-outline", iconColor: "#C8F0C9" },
+  { id: 12, title: "Trap", cover: "", icon: "diamond-outline", iconColor: "#D8CCFF" },
+  { id: 13, title: "Funk", cover: "", icon: "flame-outline", iconColor: "#FFD0A8" },
+  { id: 14, title: "Soul", cover: "", icon: "heart-circle-outline", iconColor: "#FFC9E7" },
+  { id: 15, title: "Indie", cover: "", icon: "leaf-outline", iconColor: "#D6F2C4" },
+  { id: 16, title: "House", cover: "", icon: "home-outline", iconColor: "#C8E5FF" },
+  { id: 17, title: "Techno", cover: "", icon: "hardware-chip-outline", iconColor: "#C9F4EF" },
+  { id: 18, title: "Reggaeton", cover: "", icon: "sunny-outline", iconColor: "#FFE3A3" },
 ];
 
 const POSTS: PostItem[] = [];
@@ -332,11 +501,10 @@ const RESULTS: ResultItem[] = [];
 export default function SearchScreen() {
   const router = useRouter();
   const { user } = useCurrentUser();
-  const { playQueue, playTrack, track: currentTrack, togglePlay: toggleCurrentTrack } = usePlayer();
+  const { playQueue } = usePlayer();
   const { wp, hp, font } = useResponsive();
   const [query, setQuery] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [playingItem, setPlayingItem] = useState<number | string | null>(null);
   const [recentSearches, setRecentSearches] = useState<RecentItem[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailState | null>(null);
@@ -346,13 +514,15 @@ export default function SearchScreen() {
   const [postShuffleKey, setPostShuffleKey] = useState(0);
   const [activePostIndex, setActivePostIndex] = useState<number | null>(null);
   const [activePostSequence, setActivePostSequence] = useState<PostItem[]>([]);
+  const reelsOpenRef = useRef(false);
+  const [likedPostIds, setLikedPostIds] = useState(() => new Set<string>());
   const closeReelsPanResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, gesture) =>
         Math.abs(gesture.dx) > 28 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
       onPanResponderRelease: (_, gesture) => {
         if (Math.abs(gesture.dx) > 82) {
-          setActivePostIndex(null);
+          closePostReels();
         }
       },
     }),
@@ -361,10 +531,11 @@ export default function SearchScreen() {
   useEffect(() => {
     let active = true;
 
-    Promise.all([getHomeContent(), getSearchableUsers()]).then(([content, users]) => {
-      if (!active) {
-        return;
-      }
+    Promise.all([getHomeContent(), getSearchableUsers()])
+      .then(([content, users]) => {
+        if (!active) {
+          return;
+        }
 
       const trackResults = content.tracks.map((track, index) => ({
         id: `track-${track.id ?? index}`,
@@ -376,11 +547,11 @@ export default function SearchScreen() {
         title:
           "title" in track && typeof track.title === "string"
             ? track.title
-            : "Musica",
+            : "Music",
         subtitle:
           "artist" in track && typeof track.artist === "string"
-            ? `Musica - ${track.artist}`
-            : `Musica - ${defaultUser.displayName}`,
+            ? `Music - ${track.artist}`
+            : `Music - ${defaultUser.displayName}`,
         cover:
           "coverUrl" in track && typeof track.coverUrl === "string"
             ? track.coverUrl
@@ -394,6 +565,23 @@ export default function SearchScreen() {
             ? track.lyrics
             : "",
         genres: track.genre ? [track.genre] : [],
+        queueTracks: [
+          {
+            id: track.id,
+            uri: track.audioUrl,
+            title: track.title,
+            artist: defaultUser.displayName,
+            cover:
+              "coverUrl" in track && typeof track.coverUrl === "string"
+                ? track.coverUrl
+                : defaultUser.bannerUrl,
+            genre: track.genre,
+            shortVideo: track.shortVideoUrl,
+            lyrics: track.lyrics,
+            albumId: track.albumId,
+            source: "search" as const,
+          },
+        ],
       }));
 
       const albumResults = content.albums.map((album, index) => ({
@@ -403,7 +591,7 @@ export default function SearchScreen() {
         title:
           "title" in album && typeof album.title === "string"
             ? album.title
-            : "Lancamento",
+            : "Album",
         subtitle:
           "type" in album && typeof album.type === "string"
             ? `${album.type} - ${defaultUser.displayName}`
@@ -436,6 +624,7 @@ export default function SearchScreen() {
             title: track.title,
             artist: defaultUser.displayName,
             cover: track.coverUrl || album.coverUrl,
+            folderTitle: album.title,
             genre: track.genre,
             shortVideo: track.shortVideoUrl,
             lyrics: track.lyrics,
@@ -451,8 +640,8 @@ export default function SearchScreen() {
       const userResults = users.map((profile, index) => ({
         id: `user-${profile.id ?? profile.uid ?? index}`,
         type: "artist" as const,
-        title: profile.displayName || profile.username || "Perfil",
-        subtitle: `Perfil - ${profile.followersCount ?? 0} seguidores`,
+        title: profile.displayName || profile.username || "Profile",
+        subtitle: `Profile - ${profile.followersCount ?? 0} followers`,
         cover: profile.avatarUrl || profile.bannerUrl || "",
         profileUserId: profile.uid || profile.id,
         verified: profile.verified === true,
@@ -487,11 +676,11 @@ export default function SearchScreen() {
           artist:
             profilesById.get(post.userId)?.displayName ||
             profilesById.get(post.userId)?.username ||
-            "Perfil",
+            "Profile",
           caption:
             "caption" in post && typeof post.caption === "string"
               ? post.caption
-              : "Conteudo preparado para Firebase.",
+              : "Content prepared for Firebase.",
           image:
             "mediaUrl" in post && typeof post.mediaUrl === "string"
               ? post.mediaUrl
@@ -500,6 +689,14 @@ export default function SearchScreen() {
             "mediaScale" in post && typeof post.mediaScale === "number"
               ? post.mediaScale
               : 1,
+          mediaStageWidth:
+            "mediaStageWidth" in post && typeof post.mediaStageWidth === "number"
+              ? post.mediaStageWidth
+              : 0,
+          mediaStageHeight:
+            "mediaStageHeight" in post && typeof post.mediaStageHeight === "number"
+              ? post.mediaStageHeight
+              : 0,
           category:
             "category" in post && typeof post.category === "string"
               ? post.category
@@ -508,6 +705,22 @@ export default function SearchScreen() {
             "likesCount" in post && typeof post.likesCount === "number"
               ? formatLikesLabel(post.likesCount)
               : formatLikesLabel(0),
+          linkedTrackAudioUrl:
+            "linkedTrackId" in post &&
+            typeof post.linkedTrackId === "string" &&
+            hasConfirmedPostMusic(post)
+              ? tracksById.get(post.linkedTrackId)?.audioUrl || ""
+              : "",
+          linkedTrackClipEndSeconds:
+            "linkedTrackClipEndSeconds" in post &&
+            typeof post.linkedTrackClipEndSeconds === "number"
+              ? post.linkedTrackClipEndSeconds
+              : 0,
+          linkedTrackClipStartSeconds:
+            "linkedTrackClipStartSeconds" in post &&
+            typeof post.linkedTrackClipStartSeconds === "number"
+              ? post.linkedTrackClipStartSeconds
+              : 0,
           type:
             "mediaType" in post && post.mediaType === "video"
               ? "video" as const
@@ -545,6 +758,7 @@ export default function SearchScreen() {
                   .map((overlay) => ({
                     id: overlay.id,
                     mediaUrl: overlay.mediaUrl,
+                    mediaType: "image" as const,
                     x: typeof overlay.x === "number" ? overlay.x : 0,
                     y: typeof overlay.y === "number" ? overlay.y : 0,
                     scale: typeof overlay.scale === "number" ? overlay.scale : 1,
@@ -569,18 +783,21 @@ export default function SearchScreen() {
           musicName:
             "linkedTrackId" in post &&
             typeof post.linkedTrackId === "string" &&
-            post.linkedTrackId.trim()
+            hasConfirmedPostMusic(post)
               ? tracksById.get(post.linkedTrackId)?.title || ""
               : "",
           musicCover:
             "linkedTrackId" in post &&
             typeof post.linkedTrackId === "string" &&
-            post.linkedTrackId.trim()
+            hasConfirmedPostMusic(post)
               ? tracksById.get(post.linkedTrackId)?.coverUrl || ""
               : "",
         })),
-      );
-    });
+        );
+      })
+      .catch((error) => {
+        console.log("LOAD SEARCH CONTENT ERROR:", error);
+      });
 
     return () => {
       active = false;
@@ -640,40 +857,6 @@ export default function SearchScreen() {
     };
   }, [user]);
 
-  async function handlePlayResult(item: ResultItem) {
-    if (item.albumId) {
-      await playQueue(item.queueTracks ?? []);
-      setPlayingItem(item.id);
-      return;
-    }
-
-    if (!item.audioUrl) {
-      togglePlayVisual(item.id);
-      return;
-    }
-
-    if (currentTrack?.id === String(item.id)) {
-      await toggleCurrentTrack();
-      return;
-    }
-
-    await playTrack({
-      id: item.trackId ?? String(item.id),
-      uri: item.audioUrl,
-      title: item.title,
-      artist: item.subtitle.replace(/^.*?-\s*/, ""),
-      cover: item.cover,
-      genre: item.genres?.[0],
-      lyrics: item.lyrics,
-      source: "search",
-    });
-    setPlayingItem(item.id);
-  }
-
-  function togglePlayVisual(id: number | string) {
-    setPlayingItem((current) => (current === id ? null : id));
-  }
-
   function saveRecent(item: {
     type?: RecentItem["type"] | ResultItem["type"];
     title: string;
@@ -731,8 +914,8 @@ export default function SearchScreen() {
     }
   }
 
-  function openDetail(item: DetailState) {
-    setDetail(item);
+  function openDetail(_item: DetailState) {
+    setDetail(null);
   }
 
   function openMusicRelease(title: string, cover: string) {
@@ -751,8 +934,29 @@ export default function SearchScreen() {
     return true;
   }
 
-  function handleResultPress(item: ResultItem) {
+  async function handleResultPress(item: ResultItem) {
     saveRecent(item);
+
+    if (item.type === "music" && item.audioUrl) {
+      const queue = item.queueTracks?.length
+        ? item.queueTracks
+        : [
+            {
+              albumId: item.albumId,
+              artist: item.subtitle.replace(/^Music\s*-\s*/i, "") || "Sonnor",
+              cover: item.cover,
+              id: item.trackId || String(item.id),
+              lyrics: item.lyrics,
+              source: "search" as const,
+              title: item.title,
+              uri: item.audioUrl,
+            },
+          ];
+
+      await playQueue(queue, 0, { autoRecommendations: true });
+      setIsSearchFocused(false);
+      return;
+    }
 
     if (item.albumId) {
       router.push({
@@ -779,17 +983,7 @@ export default function SearchScreen() {
       return;
     }
 
-    openDetail({
-      title: item.title,
-      subtitle: item.subtitle,
-      image: item.cover,
-      description:
-        item.type === "brand"
-          ? "Marca aberta a colaboracao e a novos drops dentro da app."
-          : item.type === "artist"
-          ? "Perfil do artista com lancamentos, estatisticas e conteudos recentes."
-          : "Faixa pronta para reproducao, partilha e exploracao visual.",
-    });
+    setIsSearchFocused(false);
   }
 
   function handleRecentPress(item: RecentItem) {
@@ -816,7 +1010,7 @@ export default function SearchScreen() {
   }
 
   function handleCategoryPress(category: CategoryItem) {
-    if (category.title === "Ver todas") {
+    if (category.title === "Show all") {
       setActiveCategory(null);
       setQuery("");
       setShowAllCategories((current) => !current);
@@ -825,6 +1019,7 @@ export default function SearchScreen() {
     }
 
     if (category.title === "Biblioteca") {
+      setShowAllCategories(false);
       router.push("/main/library");
       return;
     }
@@ -832,6 +1027,7 @@ export default function SearchScreen() {
     setActiveCategory(category.title);
     setQuery("");
     setIsSearchFocused(false);
+    setShowAllCategories(false);
   }
 
   function handleDeleteOwnPost(post: PostItem) {
@@ -839,10 +1035,10 @@ export default function SearchScreen() {
       return;
     }
 
-    Alert.alert("Apagar post?", "Isto remove o post e a midia guardada nele.", [
-      { text: "Cancelar", style: "cancel" },
+    Alert.alert("Delete post?", "This removes the post and the media stored in it.", [
+      { text: "Cancel", style: "cancel" },
       {
-        text: "Apagar",
+        text: "Delete",
         style: "destructive",
         onPress: async () => {
           try {
@@ -853,11 +1049,10 @@ export default function SearchScreen() {
             setFirebasePosts((current) =>
               current ? current.filter((item) => item.id !== post.id) : current,
             );
-            setActivePostIndex(null);
-            setActivePostSequence([]);
+            closePostReels();
           } catch (error) {
             console.log("DELETE SEARCH POST ERROR:", error);
-            Alert.alert("Erro", "Nao foi possivel apagar o post agora.");
+            Alert.alert("Error", "Could not delete the post right now.");
           }
         },
       },
@@ -882,7 +1077,102 @@ export default function SearchScreen() {
     );
 
     setActivePostSequence([...orderedGridPosts, ...randomTail]);
+    reelsOpenRef.current = true;
     setActivePostIndex(0);
+  }
+
+  function closePostReels() {
+    reelsOpenRef.current = false;
+    setActivePostIndex(null);
+    setActivePostSequence([]);
+  }
+
+  async function handleLikePost(post: PostItem) {
+    if (!user?.uid) {
+      Alert.alert("Login required", "Sign in to like this post.");
+      return;
+    }
+
+    const previousLiked = likedPostIds.has(post.id);
+    setLikedPostIds((current) => {
+      const next = new Set(current);
+      if (previousLiked) {
+        next.delete(post.id);
+      } else {
+        next.add(post.id);
+      }
+      return next;
+    });
+
+    try {
+      const result = await createLike(user.uid, "post", post.id);
+      const liked = (result.data as { liked?: boolean } | undefined)?.liked;
+
+      if (typeof liked === "boolean") {
+        setLikedPostIds((current) => {
+          const next = new Set(current);
+          if (liked) {
+            next.add(post.id);
+          } else {
+            next.delete(post.id);
+          }
+          return next;
+        });
+      }
+    } catch (error) {
+      console.log("LIKE SEARCH POST ERROR:", error);
+      setLikedPostIds((current) => {
+        const next = new Set(current);
+        if (previousLiked) {
+          next.add(post.id);
+        } else {
+          next.delete(post.id);
+        }
+        return next;
+      });
+      Alert.alert("Error", "Could not like this post right now.");
+    }
+  }
+
+  function handleReportPost(post: PostItem) {
+    if (!user?.uid) {
+      Alert.alert("Login required", "Sign in to report this post.");
+      return;
+    }
+
+    Alert.prompt(
+      "Report post",
+      "Enter the report reason.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Send",
+          onPress: async (value?: string) => {
+            const details = value?.trim();
+
+            if (!details) {
+              Alert.alert("Reason required", "Enter the report reason.");
+              return;
+            }
+
+            try {
+              await createReport({
+                reporterId: user.uid,
+                targetType: "post",
+                targetId: post.id,
+                reason: "Post report",
+                details,
+              });
+              Alert.alert("Enviado", "Obrigado. Vamos analisar este post.");
+            } catch (error) {
+              console.log("REPORT SEARCH POST ERROR:", error);
+              Alert.alert("Error", "Could not send the report right now.");
+            }
+          },
+        },
+      ],
+      "plain-text",
+    );
   }
 
   const trimmedQuery = query.trim();
@@ -894,15 +1184,17 @@ export default function SearchScreen() {
     () => firebasePosts ?? shuffleItems(POSTS),
     [firebasePosts],
   );
-  const categoryItems = showAllCategories
-    ? [...CATEGORIES, ...MORE_CATEGORIES]
-    : CATEGORIES;
+  const categoryItems = CATEGORIES;
+  const categoryListItems = [
+    ...CATEGORIES.filter((category) => category.title !== "Show all"),
+    ...MORE_CATEGORIES,
+  ];
 
   const filteredResults = !hasQuery && !activeCategory
     ? []
     : resultItems.filter((item) => {
         if (activeCategory) {
-          return item.type === "music" && item.genres?.some(
+          return Boolean(item.audioUrl) && item.type === "music" && item.genres?.some(
             (genre) => normalizeSearch(genre) === normalizeSearch(activeCategory),
           );
         }
@@ -922,6 +1214,10 @@ export default function SearchScreen() {
           );
 
           return typedProfileName || typedOneOfTheirSongs;
+        }
+
+        if (item.albumId && !item.audioUrl) {
+          return title.includes(lowerQuery);
         }
 
         return title.includes(lowerQuery) || subtitle.includes(lowerQuery);
@@ -971,21 +1267,90 @@ export default function SearchScreen() {
       </Modal>
 
       <Modal
-        visible={activePostIndex !== null}
+        transparent
+        visible={showAllCategories}
+        animationType="fade"
+        onRequestClose={() => setShowAllCategories(false)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          style={styles.categorySheetBackdrop}
+          onPress={() => setShowAllCategories(false)}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.categorySheet}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <View style={styles.categorySheetHeader}>
+              <View>
+                <Text style={styles.categorySheetEyebrow}>Explorar</Text>
+                <Text style={styles.categorySheetTitle}>Categorys</Text>
+              </View>
+              <TouchableOpacity
+                activeOpacity={0.75}
+                style={styles.categorySheetClose}
+                onPress={() => setShowAllCategories(false)}
+              >
+                <Ionicons name="close" size={20} color="#fff" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.categoryPillsWrap}
+            >
+              {categoryListItems.map((cat) => (
+                <TouchableOpacity
+                  key={`pill-${cat.id}`}
+                  activeOpacity={0.78}
+                  style={[
+                    styles.categoryPill,
+                    activeCategory === cat.title && styles.categoryPillActive,
+                  ]}
+                  onPress={() => handleCategoryPress(cat)}
+                >
+                  <Ionicons name={cat.icon} size={17} color={cat.iconColor} />
+                  <Text
+                    style={[
+                      styles.categoryPillText,
+                      activeCategory === cat.title && styles.categoryPillTextActive,
+                    ]}
+                  >
+                    {cat.title}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      <Modal
+        visible={activePostIndex !== null && activePostSequence.length > 0}
         animationType="fade"
         transparent={false}
-        onRequestClose={() => setActivePostIndex(null)}
+        onRequestClose={closePostReels}
       >
         <View style={styles.reelsModal} {...closeReelsPanResponder.panHandlers}>
           <ScrollView
             pagingEnabled
             showsVerticalScrollIndicator={false}
+            onMomentumScrollEnd={(event) => {
+              if (!reelsOpenRef.current) {
+                return;
+              }
+
+              setActivePostIndex(
+                Math.round(event.nativeEvent.contentOffset.y / hp(100)),
+              );
+            }}
             contentOffset={{
               x: 0,
               y: activePostIndex === null ? 0 : activePostIndex * hp(100),
             }}
           >
-            {activePostSequence.map((post) => {
+            {activePostSequence.map((post, index) => {
               const isOwnPost = user?.uid === post.ownerId;
 
               return (
@@ -993,17 +1358,15 @@ export default function SearchScreen() {
                   key={`reel-${post.id}`}
                   style={[styles.reelPage, { height: hp(100) }]}
                 >
-                  <PostMediaTile
+                  <FullscreenPostComposition
+                    isActive={activePostIndex === index}
                     post={post}
-                    style={styles.reelMedia}
-                    contentFit="contain"
                   />
-                  <SearchPostOverlayLayer post={post} />
                   <View style={styles.reelShade} />
 
                   <TouchableOpacity
                     style={styles.reelBackButton}
-                    onPress={() => setActivePostIndex(null)}
+                    onPress={closePostReels}
                     activeOpacity={0.85}
                   >
                     <Ionicons name="chevron-back" size={28} color="#fff" />
@@ -1021,11 +1384,40 @@ export default function SearchScreen() {
 
                   {post.musicName ? (
                     <View style={styles.reelMusicInside}>
-                      <Text style={styles.reelMusicTitle} numberOfLines={1}>
-                        {post.musicName}
-                      </Text>
+                      <View style={styles.reelMusicIconBox}>
+                        <AnimatedSoundWave />
+                      </View>
+                      <View style={styles.reelMusicTextBlock}>
+                        <Text style={styles.reelMusicTitle} numberOfLines={1}>
+                          {post.musicName}
+                        </Text>
+                        <Text style={styles.reelMusicSubtitle} numberOfLines={1}>
+                          {post.artist}
+                        </Text>
+                      </View>
                     </View>
                   ) : null}
+
+                  <View style={styles.reelActionColumn}>
+                    <TouchableOpacity
+                      style={styles.reelRoundAction}
+                      onPress={() => void handleLikePost(post)}
+                      activeOpacity={0.82}
+                    >
+                      <Ionicons
+                        name={likedPostIds.has(post.id) ? "heart" : "heart-outline"}
+                        size={24}
+                        color={likedPostIds.has(post.id) ? "#ff4f8b" : "#fff"}
+                      />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.reelRoundAction}
+                      onPress={() => handleReportPost(post)}
+                      activeOpacity={0.82}
+                    >
+                      <Ionicons name="alert-circle-outline" size={24} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
 
                   <View style={styles.reelBottom}>
                     <View style={styles.reelProfileRow}>
@@ -1064,7 +1456,7 @@ export default function SearchScreen() {
         </View>
       </Modal>
 
-      <Text style={[styles.pageTitle, { fontSize: font(34) }]}>Pesquisar</Text>
+      <Text style={[styles.pageTitle, { fontSize: font(34) }]}>Search</Text>
 
       <View
         style={[
@@ -1074,7 +1466,7 @@ export default function SearchScreen() {
       >
         <TextInput
           style={[styles.searchInput, { fontSize: font(16) }]}
-          placeholder="Artistas, musicas ou albuns..."
+          placeholder="Artists, songs, or albums..."
           placeholderTextColor="#777"
           value={query}
           onChangeText={(value) => {
@@ -1100,7 +1492,7 @@ export default function SearchScreen() {
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: hp(20) }}
+        contentContainerStyle={styles.scrollContent}
       >
         {showResults && (
           <View style={styles.section}>
@@ -1118,7 +1510,7 @@ export default function SearchScreen() {
                   <TouchableOpacity
                     style={styles.resultItem}
                     activeOpacity={0.8}
-                    onPress={() => handleResultPress(item)}
+                    onPress={() => void handleResultPress(item)}
                   >
                     <View style={{ width: wp(14), height: wp(14), marginRight: 15 }}>
                       <MediaTile
@@ -1130,31 +1522,31 @@ export default function SearchScreen() {
                             : [styles.cover, styles.coverInside, { width: wp(14), height: wp(14) }]
                         }
                       />
-                      {item.type === "music" ? (
-                        <TouchableOpacity
-                          style={styles.coverPlayButton}
-                          activeOpacity={0.42}
-                          onPress={(event) => {
-                            event.stopPropagation();
-                            void handlePlayResult(item);
-                          }}
-                        >
-                          <Ionicons name={playingItem === item.id ? "pause" : "play"} size={14} color="#06110d" />
-                        </TouchableOpacity>
-                      ) : null}
                     </View>
 
                     <View style={{ flex: 1 }}>
                       <View style={styles.resultTitleRow}>
                         <Text
-                          style={[styles.resultTitle, { fontSize: font(16) }]}
                           numberOfLines={1}
+                          style={[styles.resultTitle, { fontSize: font(16) }]}
                         >
-                          {item.title}
+                          {truncateSearchTitle(item.title)}
                         </Text>
                         {item.type === "artist" && item.verified ? (
                           <View style={styles.smallVerifyBadge}>
                             <Ionicons name="checkmark" size={9} color="#fff" />
+                          </View>
+                        ) : null}
+                        {item.type === "music" ? (
+                          <View style={styles.resultTypeBadge}>
+                            <Ionicons
+                              name={item.albumId ? "albums-outline" : "musical-note-outline"}
+                              size={11}
+                              color="#000"
+                            />
+                            <Text style={styles.resultTypeText}>
+                              {item.albumId ? "Folder" : "Track"}
+                            </Text>
                           </View>
                         ) : null}
                       </View>
@@ -1186,7 +1578,7 @@ export default function SearchScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeaderRow}>
               <Text style={[styles.sectionTitle, { fontSize: font(14) }]}>
-                Recentes
+                Recent
               </Text>
 
               <TouchableOpacity
@@ -1194,14 +1586,14 @@ export default function SearchScreen() {
                 onPress={clearRecentSearches}
               >
                 <Text style={[styles.actionText, { fontSize: font(13) }]}>
-                  Limpar
+                  Clear
                 </Text>
               </TouchableOpacity>
             </View>
 
             {recentSearches.length === 0 ? (
               <Text style={[styles.emptyText, { fontSize: font(14) }]}>
-                Ainda nao tens pesquisas recentes.
+                You do not have recent searches yet.
               </Text>
             ) : (
               recentSearches.map((item) => (
@@ -1231,10 +1623,10 @@ export default function SearchScreen() {
                     <View style={{ flex: 1 }}>
                       <View style={styles.resultTitleRow}>
                         <Text
-                          style={[styles.resultTitle, { fontSize: font(16) }]}
                           numberOfLines={1}
+                          style={[styles.resultTitle, { fontSize: font(16) }]}
                         >
-                          {item.title}
+                          {truncateSearchTitle(item.title)}
                         </Text>
                         {item.type === "artist" && item.verified ? (
                           <View style={styles.smallVerifyBadge}>
@@ -1269,7 +1661,7 @@ export default function SearchScreen() {
             <View style={styles.section}>
               <View style={styles.sectionHeaderRow}>
                 <Text style={[styles.sectionTitle, { fontSize: font(14) }]}>
-                  Categorias
+                  Categorys
                 </Text>
 
                 {activeCategory && (
@@ -1295,7 +1687,8 @@ export default function SearchScreen() {
                     <MediaTile
                       uri={cat.cover}
                       style={styles.categoryImage}
-                      icon={cat.title === "Biblioteca" ? "library-outline" : "musical-notes-outline"}
+                      icon={cat.icon}
+                      iconColor={cat.iconColor}
                     />
                     <View style={styles.categoryOverlay} />
                     <Text style={[styles.categoryTitle, { fontSize: font(13) }]}>
@@ -1304,6 +1697,7 @@ export default function SearchScreen() {
                   </TouchableOpacity>
                 ))}
               </View>
+
             </View>
 
             <View
@@ -1322,12 +1716,9 @@ export default function SearchScreen() {
                   >
                     <PostMediaTile post={post} style={styles.postGridImage} />
                     <SearchPostOverlayLayer post={post} />
-                    <View style={styles.postOverlay} />
-                    <Text
-                      style={[styles.postArtistOverlay, { fontSize: font(12) }]}
-                    >
-                      {post.likesLabel}
-                    </Text>
+                    <View style={styles.postLikesBadge}>
+                      <Text style={styles.postLikesText}>{post.likesLabel}</Text>
+                    </View>
                     <TouchableOpacity
                       style={styles.postGridTapLayer}
                       activeOpacity={1}
@@ -1347,6 +1738,20 @@ export default function SearchScreen() {
             </View>
           </>
         )}
+
+        <View pointerEvents="none" style={[styles.endFadeFooter, { height: hp(9), marginHorizontal: -wp(5) }]}>
+          <Svg height={hp(32)} style={styles.endFade} width="100%">
+            <Defs>
+              <LinearGradient id="searchEndFade" x1="0" x2="0" y1="0" y2="1">
+                <Stop offset="0" stopColor="#ffffff" stopOpacity="0" />
+                <Stop offset="0.52" stopColor="#ffffff" stopOpacity="0.03" />
+                <Stop offset="0.78" stopColor="#ffffff" stopOpacity="0.15" />
+                <Stop offset="1" stopColor="#ffffff" stopOpacity="0.5" />
+              </LinearGradient>
+            </Defs>
+            <Rect fill="url(#searchEndFade)" height={hp(32)} width="100%" x="0" y="0" />
+          </Svg>
+        </View>
       </ScrollView>
     </View>
   );
@@ -1357,6 +1762,19 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#000",
     paddingTop: 60,
+  },
+  endFade: {
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+    transform: [{ translateY: 18 }],
+  },
+  endFadeFooter: {
+    marginTop: "auto",
+    overflow: "visible",
+    position: "relative",
+    width: "100%",
   },
   pageTitle: {
     fontWeight: "700",
@@ -1372,6 +1790,10 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     color: "#fff",
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: 0,
   },
   section: {
     marginTop: 12,
@@ -1409,17 +1831,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginRight: 15,
   },
-  coverInside: { marginRight: 0 },
-  coverPlayButton: {
-    position: "absolute",
-    right: 3,
-    bottom: 3,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#6F8FAF",
+  coverInside: {
+    marginRight: 0,
   },
   artistCover: {
     marginRight: 15,
@@ -1445,6 +1858,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#2d7dff",
+  },
+  resultTypeBadge: {
+    minHeight: 20,
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#E6E6E6",
+  },
+  resultTypeText: {
+    color: "#000",
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase",
   },
   resultSubtitle: {
     color: "#888",
@@ -1495,6 +1923,78 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "700",
   },
+  categorySheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.78)",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+  categorySheet: {
+    backgroundColor: "#090b0a",
+    borderColor: "rgba(255,255,255,0.1)",
+    borderRadius: 28,
+    borderWidth: 1,
+    maxHeight: "72%",
+    padding: 18,
+    width: "100%",
+  },
+  categorySheetHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 14,
+  },
+  categorySheetEyebrow: {
+    color: "#9cebd3",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
+  },
+  categorySheetTitle: {
+    color: "#fff",
+    fontSize: 24,
+    fontWeight: "900",
+    marginTop: 3,
+  },
+  categorySheetClose: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.09)",
+    borderRadius: 18,
+    height: 36,
+    justifyContent: "center",
+    width: 36,
+  },
+  categoryPillsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 9,
+    paddingBottom: 4,
+  },
+  categoryPill: {
+    alignItems: "center",
+    backgroundColor: "#101412",
+    borderColor: "#202622",
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 7,
+    minHeight: 42,
+    paddingHorizontal: 13,
+  },
+  categoryPillActive: {
+    backgroundColor: "#f1f4f1",
+    borderColor: "#f1f4f1",
+  },
+  categoryPillText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  categoryPillTextActive: {
+    color: "#06110d",
+  },
   postsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1512,10 +2012,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "#6F8FAF",
+    backgroundColor: "#E6E6E6",
   },
-  activeFilterChipText: { color: "#000", fontSize: 14, fontWeight: "900" },
-  activeFilterHint: { color: "#888", fontSize: 12, fontWeight: "800" },
+  activeFilterChipText: {
+    color: "#000",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  activeFilterHint: {
+    color: "#888",
+    fontSize: 12,
+    fontWeight: "800",
+  },
   postGridItem: {
     width: "33.3333%",
     aspectRatio: 0.76,
@@ -1537,19 +2045,21 @@ const styles = StyleSheet.create({
   postOverlayMedia: {
     position: "absolute",
   },
-  postOverlay: {
+  postLikesBadge: {
     position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: "40%",
-  },
-  postArtistOverlay: {
-    position: "absolute",
-    left: 4,
+    left: 6,
     bottom: 6,
-    color: "#b9b9b9",
-    fontWeight: "700",
+    maxWidth: "88%",
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    backgroundColor: "rgba(0,0,0,0.62)",
+    zIndex: 12,
+  },
+  postLikesText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "900",
   },
   postGridTapLayer: {
     ...StyleSheet.absoluteFillObject,
@@ -1581,6 +2091,15 @@ const styles = StyleSheet.create({
   reelMedia: {
     ...StyleSheet.absoluteFillObject,
   },
+  fullscreenPostStage: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#000",
+  },
+  fullscreenPostComposition: {
+    position: "absolute",
+    overflow: "hidden",
+    backgroundColor: "#000",
+  },
   reelShade: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.28)",
@@ -1591,15 +2110,20 @@ const styles = StyleSheet.create({
     top: 72,
     left: 72,
     right: 72,
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
     zIndex: 12,
   },
   reelMusicIconBox: {
-    width: 0,
-    height: 0,
+    width: 18,
+    alignItems: "center",
+    justifyContent: "center",
   },
   reelMusicTextBlock: {
-    flex: 1,
+    flexShrink: 1,
+    alignItems: "center",
   },
   reelActionColumn: {
     position: "absolute",
@@ -1637,7 +2161,7 @@ const styles = StyleSheet.create({
   reelMusicSubtitle: {
     color: "#d8d8d8",
     fontSize: 12,
-    marginTop: 4,
+    marginTop: 3,
     textAlign: "center",
   },
   reelBottom: {

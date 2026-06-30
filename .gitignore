@@ -2,9 +2,12 @@
 
 # dependencies
 node_modules/
+.npm-cache/
 
 # Expo
 .expo/
+.expo-ios-*/
+.tmp-codex-export*/
 dist/
 web-build/
 expo-env.d.ts
@@ -33,6 +36,7 @@ yarn-error.*
 # local env files
 .env*.local
 functions/.env
+.firebase-cli-config/
 
 # typescript
 *.tsbuildinfo

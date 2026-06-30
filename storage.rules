@@ -14,6 +14,32 @@ service firebase.storage {
       return signedIn() && request.auth.token.admin == true;
     }
 
+    function ownsDocument(collectionName, documentId) {
+      return signedIn()
+        && firestore.get(/databases/(default)/documents/$(collectionName)/$(documentId)).data.userId == request.auth.uid;
+    }
+
+    function isPublishedTrack(trackId) {
+      return firestore.get(/databases/(default)/documents/tracks/$(trackId)).data.status == "published";
+    }
+
+    function isThreadParticipant(threadId) {
+      return signedIn()
+        && request.auth.uid in firestore.get(/databases/(default)/documents/messageThreads/$(threadId)).data.participantIds;
+    }
+
+    function validImage(maxBytes) {
+      return request.resource != null
+        && request.resource.contentType.matches("image/.*")
+        && request.resource.size < maxBytes;
+    }
+
+    function validVideo(maxBytes) {
+      return request.resource != null
+        && request.resource.contentType.matches("video/.*")
+        && request.resource.size < maxBytes;
+    }
+
     match /users/{userId}/{allPaths=**} {
       allow read: if true;
       allow write: if owns(userId) || isAdmin();
@@ -21,47 +47,58 @@ service firebase.storage {
 
     match /albums/{albumId}/{allPaths=**} {
       allow read: if true;
-      allow write: if signedIn();
+      allow write: if ownsDocument("albums", albumId) || isAdmin();
     }
 
     match /tracks/{trackId}/cover.jpg {
       allow read: if true;
-      allow write: if signedIn()
-        && request.resource.contentType.matches("image/.*")
-        && request.resource.size < 12 * 1024 * 1024;
+      allow write: if (ownsDocument("tracks", trackId) || isAdmin())
+        && validImage(12 * 1024 * 1024);
     }
 
     match /tracks/{trackId}/short-video.mp4 {
       allow read: if true;
-      allow write: if signedIn()
-        && request.resource.contentType.matches("video/.*")
-        && request.resource.size < 80 * 1024 * 1024;
+      allow write: if (ownsDocument("tracks", trackId) || isAdmin())
+        && validVideo(80 * 1024 * 1024);
     }
 
     match /tracks/{trackId}/{allPaths=**} {
-      allow read: if true;
-      allow write: if isAdmin();
+      allow read: if isPublishedTrack(trackId) || ownsDocument("tracks", trackId) || isAdmin();
+      allow write: if ownsDocument("tracks", trackId) || isAdmin();
     }
 
     match /musicSubmissions/{submissionId}/source.mp3 {
-      allow read: if signedIn();
-      allow write: if signedIn()
+      allow read: if ownsDocument("musicSubmissions", submissionId) || isAdmin();
+      allow write: if (ownsDocument("musicSubmissions", submissionId) || isAdmin())
+        && request.resource != null
         && request.resource.contentType in ["audio/mpeg", "audio/mp3", "application/octet-stream"]
         && request.resource.size < 60 * 1024 * 1024;
     }
 
     match /posts/{postId}/{allPaths=**} {
       allow read: if true;
-      allow write: if signedIn();
+      allow write: if ownsDocument("posts", postId) || isAdmin();
+    }
+
+    match /events/{eventId}/{fileName} {
+      allow read: if true;
+      allow write: if (
+        (
+          signedIn()
+          && firestore.get(/databases/(default)/documents/eventRequests/$(eventId)).data.userId == request.auth.uid
+          && firestore.get(/databases/(default)/documents/eventRequests/$(eventId)).data.status == "pending"
+        )
+        || isAdmin()
+      ) && (validImage(12 * 1024 * 1024) || validVideo(80 * 1024 * 1024));
     }
 
     match /collections/{collectionId}/{allPaths=**} {
       allow read: if true;
-      allow write: if signedIn();
+      allow write: if ownsDocument("collections", collectionId) || isAdmin();
     }
 
     match /messages/{threadId}/{messageId}/{allPaths=**} {
-      allow read, write: if signedIn();
+      allow read, write: if isThreadParticipant(threadId);
     }
 
     match /tempUploads/{userId}/{allPaths=**} {

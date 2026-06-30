@@ -21,8 +21,14 @@ import { MUSIC_GENRES } from "../../constants/musicGenres";
 import { uploadUriToStorage } from "../../firebase/storageClient";
 import { updateUserProfile } from "../../firebase/userProfile";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { getRandomAvatarFallbackColor } from "../../utils/avatarFallback";
 import { pickLibraryAsset } from "../../utils/mediaPicker";
 import { useResponsive } from "../../utils/responsive";
+import {
+  MAX_AVATAR_GIF_DURATION_SECONDS,
+  getImageUploadExtension,
+  isAvatarGifDurationAllowed,
+} from "../../utils/uploadAsset";
 
 type StepKey = "displayName" | "username" | "photo" | "birthDate" | "location" | "interests" | "review";
 
@@ -37,6 +43,8 @@ export default function CreateProfileScreen() {
   const [username, setUsername] = useState("");
   const [bio, setBio] = useState("");
   const [profileImage, setProfileImage] = useState("");
+  const [profileImageExtension, setProfileImageExtension] = useState("jpg");
+  const [avatarFallbackColor] = useState(() => getRandomAvatarFallbackColor());
   const [birthDate, setBirthDate] = useState("");
   const [country, setCountry] = useState("");
   const [city, setCity] = useState("");
@@ -90,11 +98,11 @@ export default function CreateProfileScreen() {
   function goNext() {
     if (!canContinue) {
       if (step === "interests") {
-        Alert.alert("Escolhe mais alguns", "Seleciona pelo menos 3 estilos para personalizar o teu Sonnor.");
+        Alert.alert("Choose a few more", "Select at least 3 styles to personalize your Sonnor.");
         return;
       }
 
-      Alert.alert("Falta um detalhe", "Preenche este passo antes de continuar.");
+      Alert.alert("Missing detail", "Fill in this step before continuing.");
       return;
     }
 
@@ -122,20 +130,38 @@ export default function CreateProfileScreen() {
 
   async function pickImage() {
     const asset = await pickLibraryAsset({
-      allowsEditing: true,
-      aspect: [1, 1],
+      allowsEditing: false,
       mediaTypes: "images",
       quality: 0.9,
     });
 
     if (asset?.uri) {
+      const extension = getImageUploadExtension(asset);
+
+      if (extension === "gif") {
+        try {
+          const allowed = await isAvatarGifDurationAllowed(asset.uri);
+
+          if (!allowed) {
+            Alert.alert(
+              "GIF too long",
+              `The profile GIF must be at most ${MAX_AVATAR_GIF_DURATION_SECONDS} seconds.`,
+            );
+            return;
+          }
+        } catch (error) {
+          console.log("GIF DURATION CHECK ERROR:", error);
+        }
+      }
+
       setProfileImage(asset.uri);
+      setProfileImageExtension(extension);
     }
   }
 
   async function handleCreateProfile() {
     if (!user) {
-      Alert.alert("Sessao expirada", "Entra outra vez para terminar o perfil.");
+      Alert.alert("Session expired", "Sign in again to finish your profile.");
       return;
     }
 
@@ -147,16 +173,19 @@ export default function CreateProfileScreen() {
 
       if (profileImage) {
         const avatarUpload = await uploadUriToStorage(
-          { kind: "avatar", userId: user.uid },
-          profileImage,
-        );
-        const bannerUpload = await uploadUriToStorage(
-          { kind: "banner", userId: user.uid },
+          { kind: "avatar", userId: user.uid, extension: profileImageExtension },
           profileImage,
         );
 
         avatarUrl = avatarUpload.downloadUrl;
-        bannerUrl = bannerUpload.downloadUrl;
+
+        if (profileImageExtension !== "gif") {
+          const bannerUpload = await uploadUriToStorage(
+            { kind: "banner", userId: user.uid },
+            profileImage,
+          );
+          bannerUrl = bannerUpload.downloadUrl;
+        }
       }
 
       await updateUserProfile(user.uid, {
@@ -164,17 +193,20 @@ export default function CreateProfileScreen() {
         displayName: displayName.trim(),
         bio: bio.trim(),
         avatarUrl,
+        avatarFallbackColor,
         bannerUrl,
         country: country.trim(),
         city: city.trim(),
         birthDate: birthDate.trim(),
         interests,
+        profileHiddenFields: ["birthDate", "location"],
+        onboardingCompleted: true,
       });
 
       router.replace("/main/home");
     } catch (error) {
       console.log("CREATE PROFILE ERROR:", error);
-      Alert.alert("Erro", "Nao foi possivel criar o perfil agora.");
+      Alert.alert("Error", "Could not create the profile right now.");
     } finally {
       setSaving(false);
     }
@@ -202,7 +234,7 @@ export default function CreateProfileScreen() {
         <Pressable style={styles.backButton} onPress={goBack}>
           <Ionicons name="chevron-back" size={28} color="#fff" />
         </Pressable>
-        <Text style={styles.topTitle}>Criar perfil</Text>
+        <Text style={styles.topTitle}>Create profile</Text>
         <View style={styles.topSpacer} />
       </View>
 
@@ -217,19 +249,19 @@ export default function CreateProfileScreen() {
       >
         {step === "displayName" ? (
           <View style={styles.stepBlock}>
-            <Text style={[styles.question, { fontSize: font(38) }]}>Como te chamas?</Text>
+            <Text style={[styles.question, { fontSize: font(38) }]}>What is your name?</Text>
             <TextInput
               autoCapitalize="words"
-              placeholder="O teu nome"
+              placeholder="Your name"
               placeholderTextColor="#777"
               style={styles.spotifyInput}
               value={displayName}
               onChangeText={setDisplayName}
             />
-            <Text style={styles.helperText}>Isto aparece no teu perfil do Sonnor.</Text>
+            <Text style={styles.helperText}>This appears on your Sonnor profile.</Text>
             <TextInput
               multiline
-              placeholder="Uma bio curta, se quiseres"
+              placeholder="A short bio, if you want"
               placeholderTextColor="#777"
               style={[styles.spotifyInput, styles.bioInput]}
               value={bio}
@@ -240,61 +272,69 @@ export default function CreateProfileScreen() {
 
         {step === "username" ? (
           <View style={styles.stepBlock}>
-            <Text style={[styles.question, { fontSize: font(38) }]}>Escolhe um nome unico</Text>
+            <Text style={[styles.question, { fontSize: font(38) }]}>Choose a unique name</Text>
             <View style={styles.usernameBox}>
               <Text style={styles.atSign}>@</Text>
               <TextInput
                 autoCapitalize="none"
-                placeholder="teunome"
+                placeholder="yourname"
                 placeholderTextColor="#777"
                 style={styles.usernameInput}
                 value={username}
                 onChangeText={(value) => setUsername(value.toLowerCase().replace(/[^a-z0-9._-]/g, ""))}
               />
             </View>
-            <Text style={styles.helperText}>Usa pelo menos 3 caracteres. Evita colocar dados privados.</Text>
+            <Text style={styles.helperText}>Use at least 3 characters. Avoid adding private information.</Text>
           </View>
         ) : null}
 
         {step === "photo" ? (
           <View style={styles.centerStep}>
-            <Text style={[styles.question, styles.centerQuestion, { fontSize: font(36) }]}>Adiciona uma foto</Text>
+            <Text style={[styles.question, styles.centerQuestion, { fontSize: font(36) }]}>Add a photo or GIF</Text>
             <Pressable style={styles.avatarPicker} onPress={pickImage}>
               {profileImage ? (
                 <Image source={{ uri: profileImage }} style={styles.avatarImage} />
               ) : (
-                <Ionicons name="person-circle-outline" size={96} color="#8b8b8b" />
+                <View
+                  style={[
+                    styles.avatarImage,
+                    styles.avatarColorPreview,
+                    { backgroundColor: avatarFallbackColor },
+                  ]}
+                >
+                  <Ionicons name="person" size={58} color="#fff" />
+                </View>
               )}
             </Pressable>
             <TouchableOpacity style={styles.secondaryPill} onPress={pickImage}>
               <Ionicons name="images-outline" size={18} color="#fff" />
-              <Text style={styles.secondaryPillText}>{profileImage ? "Trocar foto" : "Escolher foto"}</Text>
+              <Text style={styles.secondaryPillText}>{profileImage ? "Change photo/GIF" : "Choose photo/GIF"}</Text>
             </TouchableOpacity>
           </View>
         ) : null}
 
         {step === "birthDate" ? (
           <View style={styles.stepBlock}>
-            <Text style={[styles.question, { fontSize: font(38) }]}>Qual e a tua data de nascimento?</Text>
+            <Text style={[styles.question, { fontSize: font(38) }]}>What is your date of birth?</Text>
             <TextInput
               keyboardType="number-pad"
-              placeholder="DD/MM/AAAA"
+              placeholder="DD/MM/YYYY"
               placeholderTextColor="#777"
               style={styles.spotifyInput}
               maxLength={10}
               value={birthDate}
               onChangeText={(value) => setBirthDate(formatBirthDate(value))}
             />
-            <Text style={styles.helperText}>Este detalhe ajuda a manter a tua conta certa para ti.</Text>
+            <Text style={styles.helperText}>This detail helps keep your account right for you.</Text>
           </View>
         ) : null}
 
         {step === "location" ? (
           <View style={styles.stepBlock}>
-            <Text style={[styles.question, { fontSize: font(38) }]}>De onde es?</Text>
+            <Text style={[styles.question, { fontSize: font(38) }]}>Where are you from?</Text>
             <TextInput
               autoCapitalize="words"
-              placeholder="Pais"
+              placeholder="Country"
               placeholderTextColor="#777"
               style={styles.spotifyInput}
               value={country}
@@ -302,7 +342,7 @@ export default function CreateProfileScreen() {
             />
             <TextInput
               autoCapitalize="words"
-              placeholder="Cidade"
+              placeholder="City"
               placeholderTextColor="#777"
               style={styles.spotifyInput}
               value={city}
@@ -313,12 +353,12 @@ export default function CreateProfileScreen() {
 
         {step === "interests" ? (
           <View style={styles.stepBlock}>
-            <Text style={[styles.question, { fontSize: font(36) }]}>Escolhe 3 ou mais estilos de que gostes.</Text>
+            <Text style={[styles.question, { fontSize: font(36) }]}>Choose 3 or more styles you like.</Text>
             <View style={styles.searchLikeBox}>
               <Ionicons name="search-outline" size={24} color="#111" />
               <TextInput
                 autoCapitalize="none"
-                placeholder="Pesquisar estilos"
+                placeholder="Search styles"
                 placeholderTextColor="#555"
                 style={styles.searchLikeInput}
                 value={interestQuery}
@@ -342,7 +382,7 @@ export default function CreateProfileScreen() {
               })}
             </View>
             {visibleInterestOptions.length === 0 ? (
-              <Text style={styles.helperText}>Nao encontrei esse estilo.</Text>
+              <Text style={styles.helperText}>Could not find esse estilo.</Text>
             ) : null}
           </View>
         ) : null}
@@ -365,7 +405,7 @@ export default function CreateProfileScreen() {
               </View>
             </View>
             <Text style={[styles.question, styles.centerQuestion, { fontSize: font(36) }]}>Excelente escolha.</Text>
-            <Text style={styles.reviewText}>O teu perfil fica pronto com {interests.slice(0, 3).join(", ")}.</Text>
+            <Text style={styles.reviewText}>Your profile will be ready with {interests.slice(0, 3).join(", ")}.</Text>
           </View>
         ) : null}
       </ScrollView>
@@ -373,7 +413,7 @@ export default function CreateProfileScreen() {
       <View style={styles.footer}>
         {step === "photo" ? (
           <TouchableOpacity style={styles.skipButton} onPress={goNext}>
-            <Text style={styles.skipText}>Agora nao</Text>
+            <Text style={styles.skipText}>Not now</Text>
           </TouchableOpacity>
         ) : null}
 
@@ -383,7 +423,7 @@ export default function CreateProfileScreen() {
             style={[styles.primaryPill, saving ? styles.disabledButton : null]}
             onPress={handleCreateProfile}
           >
-            {saving ? <ActivityIndicator color="#000" /> : <Text style={styles.primaryText}>Criar perfil</Text>}
+            {saving ? <ActivityIndicator color="#000" /> : <Text style={styles.primaryText}>Create profile</Text>}
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
@@ -391,7 +431,7 @@ export default function CreateProfileScreen() {
             style={[styles.primaryPill, !canContinue ? styles.disabledButton : null]}
             onPress={goNext}
           >
-            <Text style={styles.primaryText}>Seguinte</Text>
+            <Text style={styles.primaryText}>Next</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -434,7 +474,7 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: "100%",
-    backgroundColor: "#6F8FAF",
+    backgroundColor: "#E6E6E6",
   },
   content: {
     paddingHorizontal: 22,
@@ -519,6 +559,10 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
   },
+  avatarColorPreview: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
   secondaryPill: {
     minHeight: 48,
     borderRadius: 24,
@@ -570,8 +614,8 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.12)",
   },
   chipSelected: {
-    backgroundColor: "#6F8FAF",
-    borderColor: "#6F8FAF",
+    backgroundColor: "#E6E6E6",
+    borderColor: "#E6E6E6",
   },
   chipText: {
     color: "#fff",
@@ -606,7 +650,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   reviewBubbleLeft: {
-    backgroundColor: "#6F8FAF",
+    backgroundColor: "#E6E6E6",
     marginRight: -14,
   },
   reviewBubbleRight: {
@@ -652,7 +696,7 @@ const styles = StyleSheet.create({
     borderRadius: 29,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#6F8FAF",
+    backgroundColor: "#E6E6E6",
   },
   primaryText: {
     color: "#000",

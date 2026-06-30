@@ -13,11 +13,13 @@ import {
   sendPasswordResetCode,
   verifyPasswordResetCode,
 } from "../../firebase/auth";
+import { useSuccessFeedback } from "../../components/SuccessFeedback";
 
 import BackIcon from "../../icons/BackIcon";
 
 export default function VerifyMail() {
   const router = useRouter();
+  const { showSuccess } = useSuccessFeedback();
   const params = useLocalSearchParams<{ email?: string | string[] }>();
   const email = Array.isArray(params.email) ? params.email[0] : params.email;
 
@@ -114,10 +116,7 @@ export default function VerifyMail() {
     try {
       await sendPasswordResetCode(email);
 
-      Alert.alert(
-        "Code sent",
-        "A new verification code was sent to your email.",
-      );
+      showSuccess({ message: "Code sent" });
     } catch (err) {
       console.log("RESEND ERROR:", err);
       Alert.alert("Error", "Failed to resend code.");
@@ -190,18 +189,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 25,
     paddingTop: 60,
   },
-
   backButton: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
   },
-
   backText: {
     color: "#fff",
     fontSize: 15,
   },
-
   logo: {
     fontFamily: "Bristol",
     fontSize: 60,
@@ -210,27 +206,23 @@ const styles = StyleSheet.create({
     marginTop: 20,
     marginBottom: 40,
   },
-
   title: {
     color: "#fff",
     fontSize: 34,
     fontWeight: "700",
     marginBottom: 15,
   },
-
   subtitle: {
     color: "#ccc",
     fontSize: 16,
     lineHeight: 22,
     marginBottom: 35,
   },
-
   codeRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     marginBottom: 20,
   },
-
   codeBox: {
     width: 65,
     height: 65,
@@ -241,7 +233,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textAlign: "center",
   },
-
   resend: {
     alignSelf: "flex-end",
     marginRight: 5,
@@ -249,7 +240,6 @@ const styles = StyleSheet.create({
     color: "#8f8f99",
     fontSize: 15,
   },
-
   verifyButton: {
     backgroundColor: "#222",
     height: 60,
@@ -257,7 +247,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-
   verifyText: {
     color: "#fff",
     fontSize: 18,

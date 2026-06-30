@@ -69,6 +69,8 @@ type CreatePostInput = Pick<
   | "thumbnailUrl"
   | "linkedTrackId"
   | "linkedTrackShortVideoUrl"
+  | "linkedTrackClipStartSeconds"
+  | "linkedTrackClipEndSeconds"
   | "linkedAlbumId"
   | "category"
 > & {
@@ -106,7 +108,7 @@ export async function createTrack(input: CreateTrackInput) {
 
 export async function updateTrackMedia(
   trackId: string,
-  input: Pick<TrackDocument, "coverUrl" | "shortVideoUrl">,
+  input: Partial<Pick<TrackDocument, "coverUrl" | "shortVideoUrl">>,
 ) {
   await updateDoc(doc(db, firestorePaths.track(trackId)), {
     ...input,
@@ -116,7 +118,7 @@ export async function updateTrackMedia(
 
 export async function updateTrackDetails(
   trackId: string,
-  input: Partial<Pick<TrackDocument, "coverUrl" | "status" | "title">>,
+  input: Partial<Pick<TrackDocument, "explicit" | "featNames" | "featUserIds" | "genre" | "lyrics" | "shortVideoUrl" | "title">>,
 ) {
   await updateDoc(doc(db, firestorePaths.track(trackId)), {
     ...input,
@@ -180,7 +182,7 @@ export async function createPost(input: CreatePostInput) {
 
 export async function updatePostMedia(
   postId: string,
-  input: Partial<Pick<PostDocument, "mediaUrl" | "thumbnailUrl" | "mediaScale" | "overlayMedia">>,
+  input: Partial<Pick<PostDocument, "mediaUrl" | "thumbnailUrl" | "mediaScale" | "mediaStageWidth" | "mediaStageHeight" | "overlayMedia">>,
 ) {
   await updateDoc(doc(db, firestorePaths.post(postId)), {
     ...input,
@@ -220,12 +222,6 @@ export async function deletePost(input: {
     ),
   ]);
 
-  commentsSnapshot.docs.forEach((item) => batch.delete(item.ref));
-  likesSnapshot.docs.forEach((item) => batch.delete(item.ref));
-  batch.delete(doc(db, firestorePaths.post(input.postId)));
-
-  await batch.commit();
-
   const uniqueUrls = Array.from(
     new Set((input.mediaUrls ?? []).filter((url) => url.trim().length > 0)),
   );
@@ -237,6 +233,12 @@ export async function deletePost(input: {
       ),
     ),
   );
+
+  commentsSnapshot.docs.forEach((item) => batch.delete(item.ref));
+  likesSnapshot.docs.forEach((item) => batch.delete(item.ref));
+  batch.delete(doc(db, firestorePaths.post(input.postId)));
+
+  await batch.commit();
 }
 
 export async function createCollection(input: CreateCollectionInput) {

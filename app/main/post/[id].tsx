@@ -2,12 +2,14 @@ import { Alert } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 
 import AppScreen from "../../../components/AppScreen";
+import { useSuccessFeedback } from "../../../components/SuccessFeedback";
 import { createComment, createLike } from "../../../firebase/socialClient";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 
 export default function PostDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { user } = useCurrentUser();
+  const { showSuccess } = useSuccessFeedback();
   const postId = id ?? "unknown-post";
 
   return (
@@ -20,12 +22,12 @@ export default function PostDetailScreen() {
           icon: "heart-outline",
           onPress: async () => {
             if (!user) {
-              Alert.alert("Login necessario", "Entra para gostar de posts.");
+              Alert.alert("Login required", "Sign in to like posts.");
               return;
             }
 
             await createLike(user.uid, "post", postId);
-            Alert.alert("Guardado", "Like registado no Firestore.");
+            showSuccess({ message: "Guardado" });
           },
         },
         {
@@ -33,12 +35,12 @@ export default function PostDetailScreen() {
           icon: "chatbubble-outline",
           onPress: async () => {
             if (!user) {
-              Alert.alert("Login necessario", "Entra para comentar.");
+              Alert.alert("Login required", "Sign in to comment.");
               return;
             }
 
             await createComment(user.uid, "post", postId, "Default comment");
-            Alert.alert("Guardado", "Comentario default criado no Firestore.");
+            showSuccess({ message: "Guardado" });
           },
         },
       ]}

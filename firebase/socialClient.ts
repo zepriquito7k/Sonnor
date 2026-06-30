@@ -1,21 +1,21 @@
 import {
   addDoc,
   collection,
-  deleteDoc,
   doc,
+  getCountFromServer,
   getDoc,
   getDocs,
-  increment,
   limit,
   orderBy,
   query,
-  runTransaction,
   serverTimestamp,
-  setDoc,
   updateDoc,
   where,
 } from "firebase/firestore";
+import { onAuthStateChanged, type User } from "firebase/auth";
+import { httpsCallable } from "firebase/functions";
 
+import { auth, functions } from "./config";
 import { db } from "./dataClient";
 import { defaultAppContent } from "./defaultContent";
 import { firestoreCollections } from "./paths";
@@ -25,20 +25,59 @@ function getFollowId(followerId: string, followingId: string) {
   return `${followerId}_${followingId}`;
 }
 
+async function waitForSignedUser(expectedUserId?: string) {
+  const currentUser = auth.currentUser;
+
+  if (currentUser && (!expectedUserId || currentUser.uid === expectedUserId)) {
+    return currentUser;
+  }
+
+  return new Promise<User | null>((resolve) => {
+    const timeoutId = setTimeout(() => {
+      unsubscribe();
+      resolve(null);
+    }, 2500);
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      clearTimeout(timeoutId);
+      unsubscribe();
+      resolve(user && (!expectedUserId || user.uid === expectedUserId) ? user : null);
+    });
+  });
+}
+
+export async function getCallableIdToken(expectedUserId?: string) {
+  const user = await waitForSignedUser(expectedUserId);
+
+  if (!user) {
+    throw new Error("Session required.");
+  }
+
+  return user.getIdToken(true);
+}
+
 export async function createLike(
   userId: string,
   targetType: "post" | "track" | "album" | "comment",
   targetId: string,
 ) {
-  if (targetType === "track") {
-    return toggleTrackLike(userId, targetId);
+  const idToken = await getCallableIdToken(userId);
+
+  if (targetType === "post") {
+    const response = await httpsCallable<
+      { idToken: string; postId: string },
+      { liked: boolean }
+    >(functions, "togglePostLikeV2")({
+      idToken,
+      postId: targetId,
+    });
+    return { data: response.data };
   }
 
-  return addDoc(collection(db, firestoreCollections.likes), {
-    userId,
+  return httpsCallable(functions, "toggleContentLike")({
+    idToken,
     targetType,
     targetId,
-    createdAt: serverTimestamp(),
   });
 }
 
@@ -54,161 +93,40 @@ export async function isTrackLiked(userId: string, trackId: string) {
 }
 
 export async function toggleTrackLike(userId: string, trackId: string) {
-  const likeRef = doc(
-    db,
-    firestoreCollections.likes,
-    getLikeId(userId, "track", trackId),
-  );
-  const trackRef = doc(db, firestoreCollections.tracks, trackId);
+  const idToken = await getCallableIdToken(userId);
 
-  return runTransaction(db, async (transaction) => {
-    const [likeSnapshot, trackSnapshot] = await Promise.all([
-      transaction.get(likeRef),
-      transaction.get(trackRef),
-    ]);
-
-    if (!trackSnapshot.exists()) {
-      throw new Error("Track not found.");
-    }
-
-    const currentCount =
-      typeof trackSnapshot.data().likesCount === "number"
-        ? trackSnapshot.data().likesCount
-        : 0;
-
-    if (likeSnapshot.exists()) {
-      transaction.delete(likeRef);
-      transaction.update(trackRef, { likesCount: Math.max(0, currentCount - 1) });
-      return false;
-    }
-
-    transaction.set(likeRef, {
-      userId,
-      targetType: "track",
-      targetId: trackId,
-      createdAt: serverTimestamp(),
-    });
-    transaction.update(trackRef, { likesCount: currentCount + 1 });
-    return true;
+  const response = await httpsCallable<
+    { idToken: string; trackId: string },
+    { liked: boolean }
+  >(functions, "toggleTrackLikeV2")({
+    idToken,
+    trackId,
   });
+  return response.data.liked;
 }
 
 export async function createFollow(followerId: string, followingId: string) {
   if (followerId === followingId) {
-    throw new Error("A conta nao pode seguir a si propria.");
+    throw new Error("An account cannot follow itself.");
   }
 
-  const followerRef = doc(
-    db,
-    firestoreCollections.users,
-    followingId,
-    "followers",
-    followerId,
-  );
-  const followingRef = doc(
-    db,
-    firestoreCollections.users,
-    followerId,
-    "following",
-    followingId,
-  );
-  const followRef = doc(
-    db,
-    firestoreCollections.follows,
-    getFollowId(followerId, followingId),
-  );
-  const [existing, existingGlobal] = await Promise.all([
-    getDoc(followerRef).catch(() => null),
-    getDoc(followRef).catch(() => null),
-  ]);
+  const idToken = await getCallableIdToken(followerId);
 
-  if (existing?.exists() || existingGlobal?.exists()) {
-    return followerRef;
-  }
-
-  const payload = {
-    followerId,
+  return httpsCallable(functions, "setUserFollow")({
+    idToken,
+    follow: true,
     followingId,
-    createdAt: serverTimestamp(),
-  };
-
-  await setDoc(followerRef, payload).catch(async (error) => {
-    console.log("FOLLOWER SUBCOLLECTION ERROR:", error);
-    await setDoc(followRef, payload);
   });
-
-  await Promise.all([
-    setDoc(followingRef, payload).catch((error) =>
-      console.log("FOLLOWING SUBCOLLECTION ERROR:", error),
-    ),
-    setDoc(followRef, payload).catch((error) =>
-      console.log("FOLLOW GLOBAL DOC ERROR:", error),
-    ),
-  ]);
-
-  await updateDoc(doc(db, firestoreCollections.users, followerId), {
-    followingCount: increment(1),
-    updatedAt: serverTimestamp(),
-  }).catch((error) => console.log("FOLLOWING COUNT ERROR:", error));
-
-  await updateDoc(doc(db, firestoreCollections.users, followingId), {
-    followersCount: increment(1),
-    updatedAt: serverTimestamp(),
-  }).catch((error) => console.log("FOLLOWERS COUNT ERROR:", error));
-
-  return followerRef;
 }
 
 export async function removeFollow(followerId: string, followingId: string) {
-  const followerRef = doc(
-    db,
-    firestoreCollections.users,
+  const idToken = await getCallableIdToken(followerId);
+
+  await httpsCallable(functions, "setUserFollow")({
+    idToken,
+    follow: false,
     followingId,
-    "followers",
-    followerId,
-  );
-  const followingRef = doc(
-    db,
-    firestoreCollections.users,
-    followerId,
-    "following",
-    followingId,
-  );
-  const followRef = doc(
-    db,
-    firestoreCollections.follows,
-    getFollowId(followerId, followingId),
-  );
-  const [existing, existingGlobal] = await Promise.all([
-    getDoc(followerRef).catch(() => null),
-    getDoc(followRef).catch(() => null),
-  ]);
-
-  if (!existing?.exists() && !existingGlobal?.exists()) {
-    return;
-  }
-
-  await Promise.all([
-    deleteDoc(followerRef).catch((error) =>
-      console.log("FOLLOWER SUBCOLLECTION DELETE ERROR:", error),
-    ),
-    deleteDoc(followingRef).catch((error) =>
-      console.log("FOLLOWING SUBCOLLECTION DELETE ERROR:", error),
-    ),
-    deleteDoc(followRef).catch((error) =>
-      console.log("FOLLOW GLOBAL DOC DELETE ERROR:", error),
-    ),
-  ]);
-
-  await updateDoc(doc(db, firestoreCollections.users, followerId), {
-    followingCount: increment(-1),
-    updatedAt: serverTimestamp(),
-  }).catch((error) => console.log("FOLLOWING COUNT ERROR:", error));
-
-  await updateDoc(doc(db, firestoreCollections.users, followingId), {
-    followersCount: increment(-1),
-    updatedAt: serverTimestamp(),
-  }).catch((error) => console.log("FOLLOWERS COUNT ERROR:", error));
+  });
 }
 
 export async function isFollowingUser(
@@ -219,25 +137,22 @@ export async function isFollowingUser(
     return false;
   }
 
-  const snapshot = await getDoc(
-    doc(
-      db,
-      firestoreCollections.users,
-      followingId,
-      "followers",
-      followerId,
-    ),
-  ).catch(() => null);
+  const [snapshot, globalSnapshot] = await Promise.all([
+    getDoc(
+      doc(
+        db,
+        firestoreCollections.users,
+        followingId,
+        "followers",
+        followerId,
+      ),
+    ).catch(() => null),
+    getDoc(
+      doc(db, firestoreCollections.follows, getFollowId(followerId, followingId)),
+    ).catch(() => null),
+  ]);
 
-  if (snapshot?.exists()) {
-    return true;
-  }
-
-  const globalSnapshot = await getDoc(
-    doc(db, firestoreCollections.follows, getFollowId(followerId, followingId)),
-  ).catch(() => null);
-
-  return globalSnapshot?.exists() ?? false;
+  return Boolean(snapshot?.exists() || globalSnapshot?.exists());
 }
 
 export async function countUserFollowers(userId?: string | null) {
@@ -245,26 +160,22 @@ export async function countUserFollowers(userId?: string | null) {
     return 0;
   }
 
-  const snapshot = await getDocs(
-    query(
+  const [nestedCount, globalCount] = await Promise.all([
+    getCountFromServer(
       collection(db, firestoreCollections.users, userId, "followers"),
-      limit(1000),
-    ),
-  ).catch(() => null);
+    ).catch(() => null),
+    getCountFromServer(
+      query(
+        collection(db, firestoreCollections.follows),
+        where("followingId", "==", userId),
+      ),
+    ).catch(() => null),
+  ]);
 
-  if (snapshot && !snapshot.empty) {
-    return snapshot.size;
-  }
-
-  const globalSnapshot = await getDocs(
-    query(
-      collection(db, firestoreCollections.follows),
-      where("followingId", "==", userId),
-      limit(1000),
-    ),
-  ).catch(() => null);
-
-  return globalSnapshot?.size ?? 0;
+  return Math.max(
+    nestedCount?.data().count ?? 0,
+    globalCount?.data().count ?? 0,
+  );
 }
 
 export async function createComment(
@@ -336,21 +247,33 @@ export async function markNotificationRead(notificationId: string) {
 }
 
 export async function getAdminOverview() {
-  const [users, posts, tracks, albums, reports, verifications] = await Promise.all([
-    getDocs(query(collection(db, firestoreCollections.users), limit(100))),
-    getDocs(query(collection(db, firestoreCollections.posts), limit(100))),
-    getDocs(query(collection(db, firestoreCollections.tracks), limit(100))),
-    getDocs(query(collection(db, firestoreCollections.albums), limit(100))),
-    getDocs(query(collection(db, firestoreCollections.reports), limit(100))),
-    getDocs(query(collection(db, firestoreCollections.verificationRequests), limit(100))),
-  ]);
+  try {
+    const [users, posts, tracks, albums, reports, verifications] = await Promise.all([
+      getDocs(query(collection(db, firestoreCollections.users), limit(100))),
+      getDocs(query(collection(db, firestoreCollections.posts), limit(100))),
+      getDocs(query(collection(db, firestoreCollections.tracks), limit(100))),
+      getDocs(query(collection(db, firestoreCollections.albums), limit(100))),
+      getDocs(query(collection(db, firestoreCollections.reports), limit(100))),
+      getDocs(query(collection(db, firestoreCollections.verificationRequests), limit(100))),
+    ]);
 
-  return {
-    usersCount: users.size || 1,
-    postsCount: posts.size || defaultAppContent.posts.length,
-    tracksCount: tracks.size || defaultAppContent.tracks.length,
-    albumsCount: albums.size || defaultAppContent.releases.length,
-    reportsCount: reports.size,
-    verificationRequestsCount: verifications.size,
-  };
+    return {
+      usersCount: users.size || 1,
+      postsCount: posts.size || defaultAppContent.posts.length,
+      tracksCount: tracks.size || defaultAppContent.tracks.length,
+      albumsCount: albums.size || defaultAppContent.releases.length,
+      reportsCount: reports.size,
+      verificationRequestsCount: verifications.size,
+    };
+  } catch (error) {
+    console.log("ADMIN OVERVIEW FALLBACK:", error);
+    return {
+      usersCount: 0,
+      postsCount: 0,
+      tracksCount: 0,
+      albumsCount: 0,
+      reportsCount: 0,
+      verificationRequestsCount: 0,
+    };
+  }
 }

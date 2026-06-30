@@ -43,9 +43,12 @@ import { getHomeContent } from "../../../../firebase/contentClient";
 import { createPost, updatePostMedia } from "../../../../firebase/contentMutations";
 import { uploadUriToStorage } from "../../../../firebase/storageClient";
 import { useCurrentUser } from "../../../../hooks/useCurrentUser";
+import ClipRangeSelector from "../../../../components/ClipRangeSelector";
+import { useSuccessFeedback } from "../../../../components/SuccessFeedback";
 
 const MAX_CHARS = 180;
 const MAX_VIDEO_DURATION_SECONDS = 30;
+const POST_MUSIC_CLIP_SECONDS = 30;
 const OVERLAY_STAGE_SIZE = 168;
 const TRASH_ZONE_SIZE = 88;
 
@@ -68,6 +71,8 @@ type ReadySong = {
   artist: string;
   release: string;
   duration: string;
+  durationSeconds: number;
+  audioUrl: string;
   cover: string;
   shortVideoUrl: string;
 };
@@ -154,6 +159,7 @@ function getOverlayBaseSize(uri: string) {
 export default function CreatePostScreen() {
   const router = useRouter();
   const { user } = useCurrentUser();
+  const { hideFeedback, showLoading, showSuccess } = useSuccessFeedback();
   const [baseUri, setBaseUri] = useState<string | null>(null);
   const [baseType, setBaseType] = useState<"image" | "video" | null>(null);
   const [baseExtension, setBaseExtension] = useState("jpg");
@@ -174,8 +180,25 @@ export default function CreatePostScreen() {
   const [songMenuVisible, setSongMenuVisible] = useState(false);
   const [songQuery, setSongQuery] = useState("");
   const [selectedSong, setSelectedSong] = useState<ReadySong | null>(null);
+  const [pendingSong, setPendingSong] = useState<ReadySong | null>(null);
+  const [songClipStartSeconds, setSongClipStartSeconds] = useState(0);
+  const [songClipEndSeconds, setSongClipEndSeconds] = useState(
+    POST_MUSIC_CLIP_SECONDS,
+  );
+  const [previewPlaying, setPreviewPlaying] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [songDurationLoading, setSongDurationLoading] = useState(false);
+  const previewRequestRef = useRef(0);
+  const durationRequestRef = useRef(0);
+  const previewSoundRef = useRef<{
+    playAsync: () => Promise<unknown>;
+    pauseAsync: () => Promise<unknown>;
+    setPositionAsync: (millis: number) => Promise<unknown>;
+    unloadAsync: () => Promise<unknown>;
+  } | null>(null);
   const [readySongs, setReadySongs] = useState<ReadySong[]>(READY_SONGS);
-  const [profileDisplayName, setProfileDisplayName] = useState("Perfil");
+  const [profileDisplayName, setProfileDisplayName] = useState("Profile");
   const [captionHasWrap, setCaptionHasWrap] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -221,7 +244,7 @@ export default function CreatePostScreen() {
           currentProfile?.displayName ||
             currentProfile?.username ||
             user?.displayName ||
-            "Perfil",
+            "Profile",
         );
 
         setReadySongs(
@@ -240,11 +263,11 @@ export default function CreatePostScreen() {
               title:
                 "title" in track && typeof track.title === "string"
                   ? track.title
-                  : "Musica",
+                  : "Music",
               artist:
                 userProfilesById.get(track.userId)?.displayName ||
                 userProfilesById.get(track.userId)?.username ||
-                "Artista",
+                "Artist",
               release:
                 typeof track.albumId === "string" && track.albumId.trim()
                   ? albumsById.get(track.albumId)?.title || "Album"
@@ -255,6 +278,15 @@ export default function CreatePostScreen() {
                   ? `${Math.floor(track.durationSeconds / 60)}:${String(
                       track.durationSeconds % 60,
                     ).padStart(2, "0")}`
+                  : "",
+              durationSeconds:
+                "durationSeconds" in track &&
+                typeof track.durationSeconds === "number"
+                  ? track.durationSeconds
+                  : 0,
+              audioUrl:
+                "audioUrl" in track && typeof track.audioUrl === "string"
+                  ? track.audioUrl
                   : "",
               cover:
                 "coverUrl" in track && typeof track.coverUrl === "string"
@@ -273,6 +305,23 @@ export default function CreatePostScreen() {
       active = false;
     };
   }, [user?.displayName]);
+
+  useEffect(() => {
+    if (baseType === "video") {
+      setSelectedSong(null);
+      setPendingSong(null);
+      setSongClipStartSeconds(0);
+      setSongClipEndSeconds(POST_MUSIC_CLIP_SECONDS);
+      void stopSongPreview();
+    }
+  }, [baseType]);
+
+  useEffect(
+    () => () => {
+      void previewSoundRef.current?.unloadAsync().catch(() => null);
+    },
+    [],
+  );
 
   useEffect(() => {
     setConfirmed(false);
@@ -438,7 +487,7 @@ export default function CreatePostScreen() {
     ) {
       Alert.alert(
         "Video demasiado longo",
-        "Escolhe um video com no maximo 30 segundos.",
+        "Choose a video with a maximum of 30 seconds.",
       );
       return;
     }
@@ -727,13 +776,13 @@ export default function CreatePostScreen() {
       return;
     }
 
-    Alert.alert("Descartar post?", "Vais perder as alterações atuais.", [
+    Alert.alert("Discard post?", "You will lose the current changes.", [
       {
-        text: "Continuar a editar",
+        text: "Keep editing",
         style: "cancel",
       },
       {
-        text: "Descartar",
+        text: "Discard",
         style: "destructive",
         onPress: () => router.back(),
       },
@@ -744,13 +793,179 @@ export default function CreatePostScreen() {
     return handlePublishAction();
   }
 
+  function formatClipTime(seconds: number) {
+    const safeSeconds = Math.max(0, Math.floor(seconds));
+    return `${Math.floor(safeSeconds / 60)}:${String(safeSeconds % 60).padStart(2, "0")}`;
+  }
+
+  async function stopSongPreview() {
+    previewRequestRef.current += 1;
+    const sound = previewSoundRef.current;
+    previewSoundRef.current = null;
+    setPreviewPlaying(false);
+    setPreviewLoading(false);
+    await sound?.unloadAsync().catch(() => null);
+  }
+
+  async function playSongPreview(
+    song = pendingSong,
+    clipStartSeconds = songClipStartSeconds,
+    clipEndSeconds = songClipEndSeconds,
+  ) {
+    if (!song?.audioUrl) {
+      return;
+    }
+
+    await stopSongPreview();
+    const requestId = previewRequestRef.current + 1;
+    previewRequestRef.current = requestId;
+    setPreviewLoading(true);
+    setPreviewError("");
+    const previewEndMillis = clipEndSeconds * 1000;
+
+    try {
+      const { Audio } = await import("expo-av");
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+      }).catch(() => null);
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: song.audioUrl },
+        {
+          progressUpdateIntervalMillis: 100,
+          shouldPlay: false,
+        },
+        (status) => {
+          if (
+            status.isLoaded &&
+            (status.didJustFinish || status.positionMillis >= previewEndMillis)
+          ) {
+            void stopSongPreview();
+          }
+        },
+        false,
+      );
+
+      if (previewRequestRef.current !== requestId) {
+        await sound.unloadAsync().catch(() => null);
+        return;
+      }
+
+      previewSoundRef.current = sound;
+      await sound.setPositionAsync(clipStartSeconds * 1000);
+
+      if (previewRequestRef.current !== requestId) {
+        await sound.unloadAsync().catch(() => null);
+        return;
+      }
+
+      await sound.playAsync();
+      setPreviewLoading(false);
+      setPreviewPlaying(true);
+    } catch (error) {
+      if (previewRequestRef.current === requestId) {
+        previewSoundRef.current = null;
+        setPreviewLoading(false);
+        setPreviewPlaying(false);
+        setPreviewError(
+          "Could not load this preview. Check the connection and try again.",
+        );
+      }
+      console.log("POST SONG PREVIEW ERROR:", error);
+    }
+  }
+
+  async function toggleSongPreview() {
+    if (previewPlaying) {
+      await stopSongPreview();
+      return;
+    }
+
+    await playSongPreview();
+  }
+
+  async function loadRealSongDuration(song: ReadySong) {
+    if (song.durationSeconds > 1) {
+      return song;
+    }
+
+    const requestId = durationRequestRef.current + 1;
+    durationRequestRef.current = requestId;
+    setSongDurationLoading(true);
+    setPreviewError("");
+
+    try {
+      const { Audio } = await import("expo-av");
+      const { sound, status } = await Audio.Sound.createAsync(
+        { uri: song.audioUrl },
+        { shouldPlay: false },
+        null,
+        false,
+      );
+      const durationSeconds =
+        status.isLoaded && typeof status.durationMillis === "number"
+          ? status.durationMillis / 1000
+          : 0;
+      await sound.unloadAsync().catch(() => null);
+
+      if (durationRequestRef.current !== requestId) {
+        return null;
+      }
+
+      if (durationSeconds <= 1) {
+        throw new Error("The real song duration did not become available.");
+      }
+
+      const updatedSong = {
+        ...song,
+        duration: formatClipTime(durationSeconds),
+        durationSeconds,
+      };
+      setReadySongs((current) =>
+        current.map((item) => (item.id === song.id ? updatedSong : item)),
+      );
+      return updatedSong;
+    } catch (error) {
+      if (durationRequestRef.current === requestId) {
+        setPreviewError(
+          "Could not read the full duration of this song. Try again.",
+        );
+      }
+      console.log("POST SONG DURATION ERROR:", error);
+      return null;
+    } finally {
+      if (durationRequestRef.current === requestId) {
+        setSongDurationLoading(false);
+      }
+    }
+  }
+
+  function openSongMenu() {
+    if (baseType === "video") {
+      Alert.alert(
+        "Music unavailable",
+        "You can only add music to image posts.",
+      );
+      return;
+    }
+
+    setSongMenuVisible(true);
+  }
+
+  function closeSongMenu() {
+    void stopSongPreview();
+    setPendingSong(null);
+    setSongMenuVisible(false);
+  }
+
   async function handleLegacyPrimaryAction() {
     if (publishing) {
       return;
     }
 
     if (!baseUri) {
-      Alert.alert("Falta conteúdo", "Escolhe uma imagem ou um vídeo primeiro.");
+      Alert.alert("Missing content", "Choose an image or video first.");
       return;
     }
 
@@ -759,12 +974,10 @@ export default function CreatePostScreen() {
       return;
     }
 
-    Alert.alert("Post pronto", "O post foi confirmado para publicação.", [
-      {
-        text: "Fechar",
-        onPress: () => router.back(),
-      },
-    ]);
+    showSuccess({
+      message: "Post pronto",
+      onDone: () => router.back(),
+    });
   }
 
   void handleLegacyPrimaryAction;
@@ -775,12 +988,12 @@ export default function CreatePostScreen() {
     }
 
     if (!baseUri) {
-      Alert.alert("Falta conteudo", "Escolhe uma imagem ou um video primeiro.");
+      Alert.alert("Content required", "Choose an image or video first.");
       return;
     }
 
     if (baseType === "video" && baseExtension !== "mp4") {
-      Alert.alert("Video invalido", "Escolhe um video em formato MP4 com no maximo 30 segundos.");
+      Alert.alert("Invalid video", "Choose an MP4 video with a maximum of 30 seconds.");
       return;
     }
 
@@ -791,7 +1004,7 @@ export default function CreatePostScreen() {
     ) {
       Alert.alert(
         "Video demasiado longo",
-        "Escolhe um video com no maximo 30 segundos.",
+        "Choose a video with a maximum of 30 seconds.",
       );
       return;
     }
@@ -810,20 +1023,19 @@ export default function CreatePostScreen() {
 
     try {
       setPublishing(true);
+      showLoading();
 
       const extension = baseType === "video" ? "mp4" : baseExtension;
-      const fallbackSongWithClip =
-        selectedSong ??
-        readySongs.find((song) => song.shortVideoUrl.trim().length > 0) ??
-        null;
       const postId = await createPost({
         userId: currentUser.uid,
         caption: caption.trim(),
         mediaType: baseType ?? "image",
         mediaUrl: "",
         thumbnailUrl: "",
-        linkedTrackId: fallbackSongWithClip?.id ?? "",
-        linkedTrackShortVideoUrl: fallbackSongWithClip?.shortVideoUrl ?? "",
+        linkedTrackId: selectedSong?.id ?? "",
+        linkedTrackShortVideoUrl: selectedSong?.shortVideoUrl ?? "",
+        linkedTrackClipStartSeconds: selectedSong ? songClipStartSeconds : 0,
+        linkedTrackClipEndSeconds: selectedSong ? songClipEndSeconds : 0,
         linkedAlbumId: "",
         category: "profile",
         status: "published",
@@ -853,8 +1065,8 @@ export default function CreatePostScreen() {
             scale: overlay.scale,
             baseWidth: overlay.baseWidth,
             baseHeight: overlay.baseHeight,
-            stageWidth: previewSize.width,
-            stageHeight: previewSize.height,
+            stageWidth: Math.max(previewSize.width, 1),
+            stageHeight: Math.max(previewSize.height, 1),
           };
         }),
       );
@@ -863,24 +1075,53 @@ export default function CreatePostScreen() {
         mediaUrl: upload.downloadUrl,
         thumbnailUrl: baseType === "image" ? upload.downloadUrl : "",
         mediaScale: baseScale,
+        mediaStageWidth: Math.max(previewSize.width, 1),
+        mediaStageHeight: Math.max(previewSize.height, 1),
         overlayMedia: uploadedOverlays,
       });
 
-      Alert.alert("Post publicado", "O teu post ficou disponivel no perfil.", [
-        { text: "Fechar", onPress: () => router.back() },
-      ]);
+      showSuccess({
+        message: "Post publicado",
+        onDone: () => router.back(),
+      });
     } catch (error) {
+      hideFeedback();
       console.log("CREATE POST ERROR:", error);
-      Alert.alert("Erro", "Nao foi possivel publicar o post agora.");
+      Alert.alert("Error", "Could not publicar o post right now.");
     } finally {
       setPublishing(false);
     }
   }
 
-  function handleSongSelect(song: ReadySong) {
-    setSelectedSong(song);
-    setSongMenuVisible(false);
+  async function handleSongSelect(song: ReadySong) {
+    void stopSongPreview();
+    setPendingSong(null);
+    setSongClipStartSeconds(0);
+    const measuredSong = await loadRealSongDuration(song);
+
+    if (!measuredSong) {
+      return;
+    }
+
+    setPendingSong(measuredSong);
+    const initialEnd = Math.min(
+      measuredSong.durationSeconds,
+      POST_MUSIC_CLIP_SECONDS,
+    );
+    setSongClipEndSeconds(initialEnd);
+    void playSongPreview(measuredSong, 0, initialEnd);
+  }
+
+  function confirmSongSelection() {
+    if (!pendingSong) {
+      return;
+    }
+
+    setSelectedSong(pendingSong);
+    setPendingSong(null);
     setSongQuery("");
+    void stopSongPreview();
+    setSongMenuVisible(false);
   }
 
   return (
@@ -892,12 +1133,12 @@ export default function CreatePostScreen() {
       >
         <Animated.View style={[styles.topOutside, { opacity: dragUiOpacity }]}>
           <TouchableOpacity onPress={handleCancel}>
-            <Text style={styles.topText}>Cancelar</Text>
+            <Text style={styles.topText}>Cancel</Text>
           </TouchableOpacity>
 
           <TouchableOpacity onPress={handlePrimaryAction}>
             <Text style={styles.topText}>
-              {publishing ? "A publicar..." : confirmed ? "Publicar" : "Feito"}
+              {publishing ? "Publishing..." : confirmed ? "Publish" : "Done"}
             </Text>
           </TouchableOpacity>
         </Animated.View>
@@ -943,7 +1184,7 @@ export default function CreatePostScreen() {
               >
                 <Ionicons name="images-outline" size={44} color="#777" />
                 <Text style={styles.placeholderText}>
-                  Escolher imagem ou vídeo
+                  Choose image or video
                 </Text>
               </TouchableOpacity>
             )}
@@ -959,18 +1200,18 @@ export default function CreatePostScreen() {
             style={[styles.musicInside, { opacity: dragUiOpacity }]}
           >
             <TouchableOpacity
-              onPress={() => setSongMenuVisible(true)}
+              onPress={openSongMenu}
               activeOpacity={0.88}
             >
               <Text style={styles.musicTitle}>
-                {selectedSong ? selectedSong.title : "Escolher música"}
+                {selectedSong ? selectedSong.title : "Choose music"}
               </Text>
               <Text style={styles.musicSubtitle}>
                 {selectedSong
                   ? [selectedSong.artist, selectedSong.release]
                       .filter((item) => item.trim().length > 0)
                       .join(" • ")
-                  : "Toca para pesquisar ou escolher uma pronta"}
+                  : "Tap to search or choose a ready one"}
               </Text>
             </TouchableOpacity>
           </Animated.View>
@@ -1035,7 +1276,7 @@ export default function CreatePostScreen() {
               <Ionicons
                 name={isTrashTargetActive ? "trash" : "trash-outline"}
                 size={34}
-                color={isTrashTargetActive ? "#ff3a3a" : "#ffffff"}
+                color="#ffffff"
               />
             </View>
           )}
@@ -1057,7 +1298,7 @@ export default function CreatePostScreen() {
                 </Text>
                 {caption.length === 0 ? (
                   <Text style={styles.hintText}>
-                    Toca aqui para escrever a legenda
+                    Tap here to enter the caption
                   </Text>
                 ) : (
                   <>
@@ -1071,7 +1312,7 @@ export default function CreatePostScreen() {
                       {caption}
                     </Text>
                     {captionHasWrap && (
-                      <Text style={styles.readMoreText}>Ver mais</Text>
+                      <Text style={styles.readMoreText}>See more</Text>
                     )}
                   </>
                 )}
@@ -1079,9 +1320,12 @@ export default function CreatePostScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.musicIconBox}
+              style={[
+                styles.musicIconBox,
+                baseType === "video" && styles.musicIconBoxDisabled,
+              ]}
               activeOpacity={0.86}
-              onPress={() => setSongMenuVisible(true)}
+              onPress={openSongMenu}
             >
               {selectedSong ? (
                 <SongCover
@@ -1131,7 +1375,7 @@ export default function CreatePostScreen() {
                     onChangeText={(text) =>
                       text.length <= MAX_CHARS && setCaption(text)
                     }
-                    placeholder="Escrever legenda..."
+                    placeholder="Enter caption..."
                     placeholderTextColor="#777"
                     style={styles.input}
                   />
@@ -1145,7 +1389,7 @@ export default function CreatePostScreen() {
         </Modal>
 
         <Modal visible={songMenuVisible} transparent animationType="fade">
-          <TouchableWithoutFeedback onPress={() => setSongMenuVisible(false)}>
+          <TouchableWithoutFeedback onPress={closeSongMenu}>
             <View style={styles.modalBackdrop}>
               <BlurView
                 intensity={42}
@@ -1156,18 +1400,122 @@ export default function CreatePostScreen() {
                 <View style={styles.songMenuSheet}>
                   <View style={styles.songHandle} />
                   <View style={styles.songMenuHeader}>
-                    <Text style={styles.songMenuTitle}>Escolher música</Text>
-                    <TouchableOpacity onPress={() => setSongMenuVisible(false)}>
+                    <Text style={styles.songMenuTitle}>Choose music</Text>
+                    <TouchableOpacity onPress={closeSongMenu}>
                       <Ionicons name="close" size={24} color="#fff" />
                     </TouchableOpacity>
                   </View>
 
+                  {pendingSong ? (
+                    <View style={styles.clipPicker}>
+                      <View style={styles.clipSongRow}>
+                        <SongCover uri={pendingSong.cover} style={styles.songRowCover} />
+                        <View style={styles.songRowText}>
+                          <Text style={styles.songRowTitle}>{pendingSong.title}</Text>
+                          <Text style={styles.songRowSubtitle}>{pendingSong.artist}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.clipHint}>
+                        Choose up to 30 seconds of music to play in the post.
+                      </Text>
+                      <ClipRangeSelector
+                        durationSeconds={pendingSong.durationSeconds}
+                        startSeconds={songClipStartSeconds}
+                        endSeconds={songClipEndSeconds}
+                        maxRangeSeconds={POST_MUSIC_CLIP_SECONDS}
+                        onChange={(startSeconds, endSeconds) => {
+                          void stopSongPreview();
+                          setSongClipStartSeconds(startSeconds);
+                          setSongClipEndSeconds(endSeconds);
+                        }}
+                        onComplete={(startSeconds, endSeconds) => {
+                          void playSongPreview(
+                            pendingSong,
+                            startSeconds,
+                            endSeconds,
+                          );
+                        }}
+                      />
+                      <View style={styles.clipTimes}>
+                        <Text style={styles.clipTime}>
+                          {formatClipTime(songClipStartSeconds)}
+                        </Text>
+                        <Text style={styles.clipTime}>
+                          {formatClipTime(
+                            songClipEndSeconds,
+                          )}
+                        </Text>
+                      </View>
+                      <Text style={styles.clipDuration}>
+                        Clip: {Math.max(1, Math.round(songClipEndSeconds - songClipStartSeconds))}s
+                      </Text>
+                      <TouchableOpacity
+                        style={[
+                          styles.previewButton,
+                          previewLoading && styles.previewButtonDisabled,
+                        ]}
+                        onPress={() => void toggleSongPreview()}
+                        disabled={previewLoading}
+                      >
+                        <Ionicons
+                          name={
+                            previewLoading
+                              ? "hourglass-outline"
+                              : previewPlaying
+                                ? "stop"
+                                : "play"
+                          }
+                          size={20}
+                          color="#000"
+                        />
+                        <Text style={styles.previewButtonText}>
+                          {previewLoading
+                            ? "Loading preview..."
+                            : previewPlaying
+                              ? "Stop preview"
+                              : "Play clip"}
+                        </Text>
+                      </TouchableOpacity>
+                      {previewError ? (
+                        <Text style={styles.previewError}>{previewError}</Text>
+                      ) : null}
+                      <View style={styles.clipActions}>
+                        <TouchableOpacity
+                          style={styles.clipSecondaryButton}
+                          onPress={() => {
+                            void stopSongPreview();
+                            setPendingSong(null);
+                          }}
+                        >
+                          <Text style={styles.clipSecondaryText}>Back</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.clipConfirmButton}
+                          onPress={confirmSongSelection}
+                        >
+                          <Text style={styles.clipConfirmText}>Use clip</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ) : (
+                  <>
+                  {songDurationLoading ? (
+                    <View style={styles.songDurationLoading}>
+                      <Ionicons name="hourglass-outline" size={20} color="#fff" />
+                      <Text style={styles.songDurationLoadingText}>
+                        Loading the full song duration...
+                      </Text>
+                    </View>
+                  ) : null}
+                  {previewError ? (
+                    <Text style={styles.previewError}>{previewError}</Text>
+                  ) : null}
                   <View style={styles.songSearchBox}>
                     <Ionicons name="search-outline" size={18} color="#999" />
                     <TextInput
                       value={songQuery}
                       onChangeText={setSongQuery}
-                      placeholder="Pesquisar música, artista ou álbum"
+                      placeholder="Search music, artist, or album"
                       placeholderTextColor="#777"
                       style={styles.songSearchInput}
                     />
@@ -1177,6 +1525,20 @@ export default function CreatePostScreen() {
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.songList}
                   >
+                    {selectedSong ? (
+                      <TouchableOpacity
+                        style={styles.removeSongButton}
+                        onPress={() => {
+                          setSelectedSong(null);
+                          setSongClipStartSeconds(0);
+                          setSongClipEndSeconds(POST_MUSIC_CLIP_SECONDS);
+                          closeSongMenu();
+                        }}
+                      >
+                        <Ionicons name="close-circle-outline" size={20} color="#ff6b6b" />
+                        <Text style={styles.removeSongText}>Remove music from post</Text>
+                      </TouchableOpacity>
+                    ) : null}
                     {filteredSongs.map((song) => {
                       const isSelected = selectedSong?.id === song.id;
 
@@ -1188,7 +1550,8 @@ export default function CreatePostScreen() {
                             isSelected && styles.songRowSelected,
                           ]}
                           activeOpacity={0.86}
-                          onPress={() => handleSongSelect(song)}
+                          disabled={songDurationLoading}
+                          onPress={() => void handleSongSelect(song)}
                         >
                           <SongCover
                             uri={song.cover}
@@ -1229,10 +1592,12 @@ export default function CreatePostScreen() {
 
                     {filteredSongs.length === 0 && (
                       <Text style={styles.songEmptyText}>
-                        Nenhuma música encontrada para essa pesquisa.
+                        No music found for that search.
                       </Text>
                     )}
                   </ScrollView>
+                  </>
+                  )}
                 </View>
               </TouchableWithoutFeedback>
             </View>
@@ -1535,6 +1900,36 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     gap: 10,
   },
+  songDurationLoading: {
+    minHeight: 48,
+    borderRadius: 15,
+    paddingHorizontal: 14,
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(255,255,255,0.07)",
+  },
+  songDurationLoadingText: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  removeSongButton: {
+    minHeight: 44,
+    borderRadius: 15,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(255,80,80,0.08)",
+  },
+  removeSongText: {
+    color: "#ff8a8a",
+    fontSize: 13,
+    fontWeight: "800",
+  },
   songRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1582,6 +1977,93 @@ const styles = StyleSheet.create({
     color: "#bfbfbf",
     fontSize: 12,
     fontWeight: "600",
+  },
+  musicIconBoxDisabled: {
+    opacity: 0.32,
+  },
+  clipPicker: {
+    paddingTop: 8,
+    gap: 12,
+  },
+  clipSongRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  clipHint: {
+    color: "#aaa",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
+  },
+  clipTimes: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: -8,
+  },
+  clipTime: {
+    color: "#aaa",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  clipDuration: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "800",
+    textAlign: "center",
+    marginTop: -8,
+  },
+  previewButton: {
+    minHeight: 48,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  previewButtonText: {
+    color: "#000",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  previewButtonDisabled: {
+    opacity: 0.62,
+  },
+  previewError: {
+    color: "#ff8a8a",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  clipActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
+  },
+  clipSecondaryButton: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.07)",
+  },
+  clipSecondaryText: {
+    color: "#fff",
+    fontWeight: "800",
+  },
+  clipConfirmButton: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fff",
+  },
+  clipConfirmText: {
+    color: "#000",
+    fontWeight: "900",
   },
   songEmptyText: {
     color: "#999",

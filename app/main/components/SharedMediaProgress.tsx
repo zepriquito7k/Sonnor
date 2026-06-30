@@ -1,6 +1,7 @@
 import React, {
   createContext,
   PropsWithChildren,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -67,9 +68,9 @@ export function SharedMediaProgressProvider({ children }: PropsWithChildren) {
     return () => cancelAnimationFrame(frameId);
   }, [duration, isPlaying]);
 
-  const setProgress = (value: number) => {
+  const setProgress = useCallback((value: number) => {
     setCurrentTime(clamp(value, 0, 1) * duration);
-  };
+  }, [duration]);
 
   const progress = duration === 0 ? 0 : currentTime / duration;
   const remainingTime = Math.max(duration - currentTime, 0);
@@ -85,7 +86,7 @@ export function SharedMediaProgressProvider({ children }: PropsWithChildren) {
       setIsPlaying,
       togglePlayback: () => setIsPlaying((current) => !current),
     }),
-    [currentTime, duration, isPlaying, progress, remainingTime],
+    [currentTime, duration, isPlaying, progress, remainingTime, setProgress],
   );
 
   return (
@@ -105,4 +106,8 @@ export function useSharedMediaProgress() {
   }
 
   return context;
+}
+
+export default function SharedMediaProgressRoute() {
+  return null;
 }

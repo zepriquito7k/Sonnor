@@ -1,21 +1,56 @@
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { hasCompletedUserProfile } from "../firebase/userProfile";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { useResponsive } from "../utils/responsive";
 
 export default function Index() {
   const { wp, hp, font } = useResponsive();
   const { loading, user } = useCurrentUser();
+  const [checkingProfile, setCheckingProfile] = useState(true);
 
   useEffect(() => {
-    if (!loading && user) {
-      router.replace("/main/home");
+    let active = true;
+
+    async function routeSignedInUser() {
+      if (loading) {
+        return;
+      }
+
+      if (!user) {
+        setCheckingProfile(false);
+        return;
+      }
+
+      setCheckingProfile(true);
+
+      try {
+        const completed = await hasCompletedUserProfile(user.uid);
+
+        if (!active) {
+          return;
+        }
+
+        router.replace(completed ? "/main/home" : "/onboarding/create-profile");
+      } catch (error) {
+        console.log("CHECK PROFILE COMPLETION ERROR:", error);
+
+        if (active) {
+          router.replace("/onboarding/create-profile");
+        }
+      }
     }
+
+    void routeSignedInUser();
+
+    return () => {
+      active = false;
+    };
   }, [loading, user]);
 
-  if (loading || user) {
+  if (loading || checkingProfile || user) {
     return <View style={styles.container} />;
   }
 
@@ -49,7 +84,7 @@ export default function Index() {
           },
         ]}
       >
-        Onde a tua vibe vira a sua identidade
+        Where your vibe becomes your identity
       </Text>
 
       <View
@@ -68,7 +103,7 @@ export default function Index() {
           onPress={() => router.replace("/auth/login")}
         >
           <Text style={[styles.primaryText, { fontSize: font(16) }]}>
-            Entrar
+            Sign in
           </Text>
         </TouchableOpacity>
 
@@ -77,7 +112,7 @@ export default function Index() {
           onPress={() => router.replace("/auth/new-account")}
         >
           <Text style={[styles.secondaryText, { fontSize: font(16) }]}>
-            Criar Conta
+            Create Account
           </Text>
         </TouchableOpacity>
       </View>

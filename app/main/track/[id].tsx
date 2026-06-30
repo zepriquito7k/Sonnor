@@ -10,7 +10,7 @@ import { firestoreCollections } from "../../../firebase/paths";
 export default function TrackDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const [message, setMessage] = useState("A abrir lançamento...");
+  const [message, setMessage] = useState("Opening release...");
 
   useEffect(() => {
     let active = true;
@@ -33,7 +33,7 @@ export default function TrackDetailScreen() {
       }
 
       if (active) {
-        setMessage("Este lançamento ainda não tem uma pasta disponível.");
+        setMessage("This release does not have an available folder yet.");
       }
     }
 

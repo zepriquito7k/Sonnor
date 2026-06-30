@@ -9,6 +9,8 @@ import {
   View,
 } from "react-native";
 
+import { pressableFeedback } from "./pressFeedback";
+
 type ScreenAction = {
   label: string;
   icon?: keyof typeof Ionicons.glyphMap;
@@ -44,7 +46,7 @@ export default function AppScreen({
         contentContainerStyle={styles.content}
       >
         <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={() => router.back()}>
+          <Pressable style={pressableFeedback(styles.backButton)} onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={22} color="#fff" />
           </Pressable>
 
@@ -59,7 +61,7 @@ export default function AppScreen({
             {actions.map((action) => (
               <Pressable
                 key={action.label}
-                style={styles.actionButton}
+                style={pressableFeedback(styles.actionButton)}
                 onPress={() => {
                   if (action.onPress) {
                     action.onPress();

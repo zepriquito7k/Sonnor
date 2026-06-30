@@ -2,8 +2,10 @@ import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import type { User } from "firebase/auth";
 
 import { db } from "./dataClient";
+import { clearContentCache } from "./contentClient";
 import { defaultUser } from "./defaultContent";
 import { firestorePaths } from "./paths";
+import { getRandomAvatarFallbackColor } from "../utils/avatarFallback";
 
 function buildPrivateUsername(uid: string) {
   const suffix = uid.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase();
@@ -26,13 +28,14 @@ export async function ensureUserProfile(user: User) {
     displayName: user.displayName ?? defaultUser.displayName,
     bio: "",
     avatarUrl: "",
+    avatarFallbackColor: getRandomAvatarFallbackColor(),
     bannerUrl: "",
     backgroundUrl: "",
     country: "",
     city: "",
     birthDate: "",
     interests: [],
-    profileHiddenFields: [],
+    profileHiddenFields: ["birthDate", "location"],
     verificationOverride: false,
     verifiedBy: "",
     verifiedReason: "",
@@ -49,6 +52,36 @@ export async function ensureUserProfile(user: User) {
   });
 }
 
+export async function hasCompletedUserProfile(userId: string) {
+  const snapshot = await getDoc(doc(db, firestorePaths.user(userId)));
+
+  if (!snapshot.exists()) {
+    return false;
+  }
+
+  const data = snapshot.data();
+
+  if (data.onboardingCompleted === true) {
+    return true;
+  }
+
+  return Boolean(
+    typeof data.displayName === "string" &&
+      data.displayName.trim().length >= 2 &&
+      typeof data.username === "string" &&
+      !data.username.startsWith("user_") &&
+      data.username.trim().length >= 3 &&
+      typeof data.birthDate === "string" &&
+      data.birthDate.trim().length > 0 &&
+      typeof data.country === "string" &&
+      data.country.trim().length > 0 &&
+      typeof data.city === "string" &&
+      data.city.trim().length > 0 &&
+      Array.isArray(data.interests) &&
+      data.interests.length >= 3,
+  );
+}
+
 export async function updateUserProfile(
   userId: string,
   values: Partial<{
@@ -56,6 +89,7 @@ export async function updateUserProfile(
     displayName: string;
     bio: string;
     avatarUrl: string;
+    avatarFallbackColor: string;
     bannerUrl: string;
     backgroundUrl: string;
     spotifyUrl: string;
@@ -82,10 +116,12 @@ export async function updateUserProfile(
     birthDate: string;
     interests: string[];
     profileHiddenFields: string[];
+    onboardingCompleted: boolean;
   }>,
 ) {
   await setDoc(doc(db, firestorePaths.user(userId)), {
     ...values,
     updatedAt: serverTimestamp(),
   }, { merge: true });
+  clearContentCache();
 }

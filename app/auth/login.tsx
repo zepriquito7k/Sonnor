@@ -13,12 +13,13 @@ import {
   View,
 } from "react-native";
 import { login } from "../../firebase/auth";
+import { hasCompletedUserProfile } from "../../firebase/userProfile";
 import { isValidEmail } from "../../firebase/validate";
 import { useResponsive } from "../../utils/responsive"; // Importado o seu hook
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { wp, hp, font } = useResponsive(); // Inicializando as funções de escala
+  const { wp, hp, font } = useResponsive(); // Initializes the scale helpers
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -55,24 +56,25 @@ export default function LoginScreen() {
 
     if (!isValidEmail(email) || password.trim() === "") {
       setError(true);
-      Alert.alert("Dados em falta", "Escreve um email valido e a password.");
+      Alert.alert("Missing details", "Enter um valid email and the password.");
       return;
     }
 
     try {
-      await login(email, password);
-      router.replace("/main/home");
+      const credentials = await login(email, password);
+      const completed = await hasCompletedUserProfile(credentials.user.uid);
+      router.replace(completed ? "/main/home" : "/onboarding/create-profile");
     } catch (err: any) {
       setError(true);
 
       if (err?.code === "auth/user-not-found") {
         Alert.alert(
-          "Conta nao encontrada",
-          "Ainda nao existe uma conta com estes dados. Cria conta primeiro.",
+          "Account not found",
+          "There is no account with these details yet. Create an account first.",
           [
-            { text: "Cancelar", style: "cancel" },
+            { text: "Cancel", style: "cancel" },
             {
-              text: "Criar conta",
+              text: "Create account",
               onPress: () => router.push("/auth/new-account"),
             },
           ],
@@ -86,12 +88,12 @@ export default function LoginScreen() {
       ) {
         Alert.alert(
           "Login invalido",
-          "Confirma se o email e a password estao iguais aos do Firebase Authentication.",
+          "Confirma se o email and the password estao iguais aos do Firebase Authentication.",
         );
         return;
       }
 
-      Alert.alert("Erro no login", "Nao foi possivel entrar agora.");
+      Alert.alert("Login error", "Could not entrar right now.");
     }
   }
 
@@ -112,7 +114,7 @@ export default function LoginScreen() {
         style={[styles.form, { marginTop: hp(13), paddingHorizontal: wp(6) }]}
       >
         <Text style={[styles.title, { fontSize: font(22) }]}>
-          Iniciar sessão
+          Sign in
         </Text>
 
         <TextInput
@@ -176,7 +178,7 @@ export default function LoginScreen() {
           onPress={handleLogin}
         >
           <Text style={[styles.primaryText, { fontSize: font(16) }]}>
-            Entrar
+            Sign in
           </Text>
         </TouchableOpacity>
 
@@ -188,7 +190,7 @@ export default function LoginScreen() {
         >
           <Ionicons name="logo-apple" size={font(20)} color="#000" />
           <Text style={[styles.appleText, { fontSize: font(15) }]}>
-            Iniciar sessão com Apple
+            Sign in with Apple
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -199,7 +201,7 @@ export default function LoginScreen() {
           onPress={() => router.push("/auth/new-account")}
         >
           <Text style={[styles.secondaryText, { fontSize: font(15) }]}>
-            Criar conta
+            Create account
           </Text>
         </TouchableOpacity>
       </View>

@@ -36,7 +36,7 @@ function waitForSignedInUser() {
 
     const timeout = setTimeout(() => {
       unsubscribe();
-      reject(Object.assign(new Error("Sessao expirada. Entra outra vez."), {
+      reject(Object.assign(new Error("Session expired. Sign in again."), {
         code: "auth/no-current-user",
       }));
     }, 5000);
@@ -252,7 +252,7 @@ async function postSignupEndpoint(
 
       if (!response.ok) {
         if (response.status === 404) {
-          lastError = Object.assign(new Error("Funcao nao encontrada."), {
+          lastError = Object.assign(new Error("Function not found."), {
             code: "functions/not-found",
           });
           continue;
@@ -266,8 +266,8 @@ async function postSignupEndpoint(
               : "functions/internal";
         const fallbackMessage =
           functionName === "sendSignupOtpHttp"
-            ? "Nao foi possivel enviar o codigo."
-            : "Nao foi possivel confirmar o codigo.";
+            ? "Could not send the code."
+            : "Could not confirmar o code.";
         const message =
           typeof payload?.error === "string" ? payload.error : fallbackMessage;
 
@@ -313,7 +313,7 @@ async function postDeleteAccountEndpoint(body: {
 
       if (!response.ok) {
         if (response.status === 404) {
-          lastError = Object.assign(new Error("Funcao nao encontrada."), {
+          lastError = Object.assign(new Error("Function not found."), {
             code: "functions/not-found",
           });
           continue;
@@ -328,7 +328,7 @@ async function postDeleteAccountEndpoint(body: {
         const message =
           typeof payload?.error === "string"
             ? payload.error
-            : "Nao foi possivel apagar a conta.";
+            : "Could not delete the account.";
 
         throw Object.assign(new Error(message), { code });
       }

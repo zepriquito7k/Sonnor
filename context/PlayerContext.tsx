@@ -1,8 +1,13 @@
 import type { AVPlaybackStatus } from "expo-av";
-import React, { createContext, useContext, useRef, useState } from "react";
+import { onAuthStateChanged } from "firebase/auth";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
+import { Alert } from "react-native";
 
 import { auth } from "../firebase/config";
-import { getRecommendedTracks } from "../firebase/contentClient";
+import {
+  canPlayAlbumTrack,
+  getRecommendedTracks,
+} from "../firebase/contentClient";
 import { createRecentPlay } from "../firebase/contentMutations";
 
 export type Track = {
@@ -14,35 +19,58 @@ export type Track = {
   shortVideo?: string;
   lyrics?: string;
   albumId?: string;
+  folderTitle?: string;
   genre?: string;
   source?: "home" | "search" | "profile" | "release" | "library";
 };
 
 type PlayerContextType = {
+  autoRecommendations: boolean;
   track: Track | null;
   status: AVPlaybackStatus | null;
   playTrack: (track: Track) => Promise<void>;
-  playQueue: (tracks: Track[], startIndex?: number) => Promise<void>;
+  playQueue: (
+    tracks: Track[],
+    startIndex?: number,
+    options?: PlayQueueOptions,
+  ) => Promise<void>;
   playNext: () => Promise<void>;
   playPrevious: () => Promise<void>;
+  setAutoRecommendations: (enabled: boolean) => void;
   togglePlay: () => Promise<void>;
   seek: (millis: number) => Promise<void>;
   stop: () => Promise<void>;
 };
 
+type PlayQueueOptions = {
+  autoRecommendations?: boolean;
+};
+
+type SoundHandle = {
+  getStatusAsync: () => Promise<AVPlaybackStatus>;
+  pauseAsync: () => Promise<AVPlaybackStatus>;
+  stopAsync: () => Promise<AVPlaybackStatus>;
+  playAsync: () => Promise<AVPlaybackStatus>;
+  setPositionAsync: (millis: number) => Promise<AVPlaybackStatus>;
+  unloadAsync: () => Promise<AVPlaybackStatus>;
+  setOnPlaybackStatusUpdate: (
+    callback: ((status: AVPlaybackStatus) => void) | null,
+  ) => void;
+};
+
 const PlayerContext = createContext<PlayerContextType>({} as PlayerContextType);
 
 export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
-  const soundRef = useRef<{
-    getStatusAsync: () => Promise<AVPlaybackStatus>;
-    pauseAsync: () => Promise<AVPlaybackStatus>;
-    stopAsync: () => Promise<AVPlaybackStatus>;
-    playAsync: () => Promise<AVPlaybackStatus>;
-    setPositionAsync: (millis: number) => Promise<AVPlaybackStatus>;
-    unloadAsync: () => Promise<AVPlaybackStatus>;
+  const soundRef = useRef<SoundHandle | null>(null);
+  const preparedSoundRef = useRef<{
+    sound: SoundHandle;
+    trackId: string;
+    uri: string;
   } | null>(null);
+  const prepareSoundRequestRef = useRef(0);
   const [track, setTrack] = useState<Track | null>(null);
   const [status, setStatus] = useState<AVPlaybackStatus | null>(null);
+  const [autoRecommendations, setAutoRecommendationsState] = useState(false);
   const seekingRef = useRef(false);
   const audioModeReadyRef = useRef(false);
   const playRequestIdRef = useRef(0);
@@ -51,6 +79,11 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
   const historyRef = useRef<Track[]>([]);
   const historyIndexRef = useRef(-1);
   const recommendationGenreRef = useRef<string | undefined>(undefined);
+  const recommendationPromiseRef = useRef<Promise<Track[]> | null>(null);
+  const recommendationKeyRef = useRef("");
+  const autoRecommendationsRef = useRef(false);
+  const queueEndedRef = useRef(false);
+  const finishHandlingRef = useRef(false);
   const playQueuedTrackRef = useRef<(index: number) => Promise<void>>(async () => {});
   const playNextRef = useRef<() => Promise<void>>(async () => {});
 
@@ -73,9 +106,163 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }
 
+  useEffect(() => {
+    void import("expo-av").then(({ Audio }) => ensureAudioMode(Audio));
+
+    return () => {
+      void soundRef.current?.unloadAsync().catch(() => null);
+      void preparedSoundRef.current?.sound.unloadAsync().catch(() => null);
+    };
+  }, []);
+
+  useEffect(() => {
+    return onAuthStateChanged(auth, (nextUser) => {
+      if (nextUser) {
+        return;
+      }
+
+      playRequestIdRef.current += 1;
+      prepareSoundRequestRef.current += 1;
+
+      const currentSound = soundRef.current;
+      const preparedSound = preparedSoundRef.current?.sound;
+      soundRef.current = null;
+      preparedSoundRef.current = null;
+
+      currentSound?.setOnPlaybackStatusUpdate(null);
+      void currentSound
+        ?.stopAsync()
+        .catch(() => null)
+        .then(() => currentSound.unloadAsync().catch(() => null));
+      void preparedSound
+        ?.stopAsync()
+        .catch(() => null)
+        .then(() => preparedSound.unloadAsync().catch(() => null));
+
+      queueRef.current = [];
+      queueIndexRef.current = -1;
+      historyRef.current = [];
+      historyIndexRef.current = -1;
+      recommendationGenreRef.current = undefined;
+      recommendationPromiseRef.current = null;
+      recommendationKeyRef.current = "";
+      autoRecommendationsRef.current = false;
+      setAutoRecommendationsState(false);
+      queueEndedRef.current = false;
+      setTrack(null);
+      setStatus(null);
+    });
+  }, []);
+
+  function handlePlaybackStatus(nextStatus: AVPlaybackStatus) {
+    setStatus(nextStatus);
+
+    if (nextStatus.isLoaded && nextStatus.didJustFinish && !finishHandlingRef.current) {
+      finishHandlingRef.current = true;
+      void playNextRef.current().finally(() => {
+        finishHandlingRef.current = false;
+      });
+    }
+  }
+
+  async function prepareSound(nextTrack?: Track) {
+    if (!nextTrack?.uri.trim()) {
+      return;
+    }
+
+    if (!(await canPlayAlbumTrack(nextTrack.albumId))) {
+      return;
+    }
+
+    if (
+      preparedSoundRef.current?.trackId === nextTrack.id &&
+      preparedSoundRef.current.uri === nextTrack.uri
+    ) {
+      return;
+    }
+
+    const requestId = prepareSoundRequestRef.current + 1;
+    prepareSoundRequestRef.current = requestId;
+    const { Audio } = await import("expo-av");
+    await ensureAudioMode(Audio);
+    const { sound } = await Audio.Sound.createAsync(
+      { uri: nextTrack.uri },
+      {
+        shouldPlay: false,
+        progressUpdateIntervalMillis: 250,
+        volume: 1,
+      },
+      null,
+      false,
+    );
+
+    if (prepareSoundRequestRef.current !== requestId) {
+      await sound.unloadAsync().catch(() => null);
+      return;
+    }
+
+    const previousPreparedSound = preparedSoundRef.current?.sound;
+    preparedSoundRef.current = {
+      sound,
+      trackId: nextTrack.id,
+      uri: nextTrack.uri,
+    };
+    void previousPreparedSound?.unloadAsync().catch(() => null);
+  }
+
+  function prepareFollowingTrack() {
+    const nextQueuedTrack = queueRef.current[queueIndexRef.current + 1];
+
+    if (nextQueuedTrack) {
+      void prepareSound(nextQueuedTrack).catch(() => null);
+      return;
+    }
+
+    void prepareRecommendations(recommendationGenreRef.current ?? track?.genre)
+      .then((tracks) => prepareSound(tracks[0]))
+      .catch(() => null);
+  }
+
+  function prepareRecommendations(genre?: string) {
+    const excludedIds = historyRef.current.map((item) => item.id);
+    const key = `${genre ?? ""}:${excludedIds.join(",")}`;
+
+    if (recommendationPromiseRef.current && recommendationKeyRef.current === key) {
+      return recommendationPromiseRef.current;
+    }
+
+    recommendationKeyRef.current = key;
+    recommendationPromiseRef.current = getRecommendedTracks(genre, excludedIds).then(
+      (recommendations) =>
+        recommendations.map((item) => ({
+          albumId: item.albumId,
+          artist: item.artistName || "Artist",
+          cover: item.coverUrl || "",
+          genre: item.genre || "",
+          id: item.id,
+          lyrics: item.lyrics || "",
+          shortVideo: item.shortVideoUrl || "",
+          source: "home",
+          title: item.title || "Music",
+          uri: item.audioUrl,
+        })),
+    );
+
+    return recommendationPromiseRef.current;
+  }
+
   async function loadTrack(newTrack: Track, recordHistory = true) {
+    if (!(await canPlayAlbumTrack(newTrack.albumId))) {
+      Alert.alert(
+        "Pre-release",
+        "This track will be available when the countdown ends.",
+      );
+      return;
+    }
+
     const requestId = playRequestIdRef.current + 1;
     playRequestIdRef.current = requestId;
+    queueEndedRef.current = false;
 
     if (track?.id === newTrack.id && soundRef.current) {
       const currentStatus = await soundRef.current.getStatusAsync();
@@ -88,6 +275,9 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
       }
     }
 
+    setTrack(newTrack);
+    setStatus(null);
+
     const { Audio } = await import("expo-av");
     await ensureAudioMode(Audio);
 
@@ -95,25 +285,37 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
     soundRef.current = null;
 
     if (previousSound) {
-      await previousSound.stopAsync().catch(() => null);
-      await previousSound.unloadAsync().catch(() => null);
+      void previousSound
+        .stopAsync()
+        .catch(() => null)
+        .then(() => previousSound.unloadAsync().catch(() => null));
     }
 
-    const { sound } = await Audio.Sound.createAsync(
-      { uri: newTrack.uri },
-      {
-        shouldPlay: true,
-        progressUpdateIntervalMillis: 250,
-        volume: 1,
-      },
-      (s) => {
-        setStatus(s);
+    const preparedSound =
+      preparedSoundRef.current?.trackId === newTrack.id &&
+      preparedSoundRef.current.uri === newTrack.uri
+        ? preparedSoundRef.current.sound
+        : null;
+    let sound: SoundHandle;
 
-        if (s.isLoaded && s.didJustFinish) {
-          void playNextRef.current();
-        }
-      },
-    );
+    if (preparedSound) {
+      preparedSoundRef.current = null;
+      preparedSound.setOnPlaybackStatusUpdate(handlePlaybackStatus);
+      sound = preparedSound;
+      await sound.playAsync();
+    } else {
+      const created = await Audio.Sound.createAsync(
+        { uri: newTrack.uri },
+        {
+          shouldPlay: true,
+          progressUpdateIntervalMillis: 250,
+          volume: 1,
+        },
+        handlePlaybackStatus,
+        false,
+      );
+      sound = created.sound;
+    }
 
     if (playRequestIdRef.current !== requestId) {
       await sound.stopAsync().catch(() => null);
@@ -122,8 +324,6 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     soundRef.current = sound;
-    setTrack(newTrack);
-
     if (recordHistory) {
       const currentHistory = historyRef.current.slice(
         0,
@@ -135,6 +335,9 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
       historyRef.current = currentHistory;
       historyIndexRef.current = currentHistory.length - 1;
     }
+
+    void prepareRecommendations(newTrack.genre);
+    prepareFollowingTrack();
 
     if (auth.currentUser?.uid) {
       createRecentPlay({
@@ -149,8 +352,15 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
   async function playTrack(newTrack: Track) {
     queueRef.current = [];
     queueIndexRef.current = -1;
+    autoRecommendationsRef.current = false;
+    setAutoRecommendationsState(false);
     recommendationGenreRef.current = newTrack.genre;
     await loadTrack(newTrack);
+  }
+
+  function setAutoRecommendations(enabled: boolean) {
+    autoRecommendationsRef.current = enabled;
+    setAutoRecommendationsState(enabled);
   }
 
   async function playQueuedTrack(index: number) {
@@ -161,12 +371,17 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     queueIndexRef.current = index;
+    queueEndedRef.current = false;
     await loadTrack(nextTrack);
   }
 
   playQueuedTrackRef.current = playQueuedTrack;
 
-  async function playQueue(tracks: Track[], startIndex = 0) {
+  async function playQueue(
+    tracks: Track[],
+    startIndex = 0,
+    options: PlayQueueOptions = {},
+  ) {
     const playableTracks = tracks.filter((item) => item.uri.trim());
 
     if (playableTracks.length === 0) {
@@ -174,6 +389,7 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     queueRef.current = playableTracks;
+    setAutoRecommendations(Boolean(options.autoRecommendations));
     recommendationGenreRef.current = playableTracks[startIndex]?.genre;
     await playQueuedTrack(Math.min(Math.max(startIndex, 0), playableTracks.length - 1));
   }
@@ -222,27 +438,22 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
       return;
     }
 
-    const recommendations = await getRecommendedTracks(
-      recommendationGenreRef.current ?? track?.genre,
-      historyRef.current.map((item) => item.id),
-    );
-    const recommendedQueue: Track[] = recommendations.map((item) => ({
-      albumId: item.albumId,
-      artist: item.artistName || "Artista",
-      cover: item.coverUrl || "",
-      genre: item.genre || "",
-      id: item.id,
-      lyrics: item.lyrics || "",
-      shortVideo: item.shortVideoUrl || "",
-      source: "home",
-      title: item.title || "Música",
-      uri: item.audioUrl,
-    }));
+    if (autoRecommendationsRef.current) {
+      const recommendedQueue = await prepareRecommendations(
+        recommendationGenreRef.current ?? track?.genre,
+      );
+      recommendationPromiseRef.current = null;
+      recommendationKeyRef.current = "";
 
-    if (recommendedQueue.length > 0) {
-      queueRef.current = recommendedQueue;
-      await playQueuedTrack(0);
+      if (recommendedQueue.length > 0) {
+        queueRef.current = recommendedQueue;
+        queueIndexRef.current = -1;
+        await playQueuedTrack(0);
+        return;
+      }
     }
+
+    queueEndedRef.current = true;
   }
 
   playNextRef.current = playNext;
@@ -252,6 +463,26 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
     const s = await soundRef.current.getStatusAsync();
 
     if (!s.isLoaded) return;
+
+    const finishedTrack =
+      s.didJustFinish ||
+      queueEndedRef.current ||
+      (typeof s.durationMillis === "number" &&
+        s.durationMillis > 0 &&
+        s.positionMillis >= s.durationMillis - 350);
+
+    if (!s.isPlaying && finishedTrack) {
+      if (queueRef.current.length > 0) {
+        await playQueuedTrack(0);
+        return;
+      }
+
+      const resetStatus = await soundRef.current.setPositionAsync(0);
+      await soundRef.current.playAsync();
+      queueEndedRef.current = false;
+      setStatus(resetStatus);
+      return;
+    }
 
     const nextStatus = s.isPlaying
       ? await soundRef.current.pauseAsync()
@@ -294,12 +525,14 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
   return (
     <PlayerContext.Provider
       value={{
+        autoRecommendations,
         track,
         status,
         playTrack,
         playQueue,
         playNext,
         playPrevious,
+        setAutoRecommendations,
         togglePlay,
         seek,
         stop,
