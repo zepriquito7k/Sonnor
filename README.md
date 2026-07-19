@@ -1,50 +1,98 @@
-# Welcome to your Expo app 👋
+<p align="center">
+  <img src="https://raw.githubusercontent.com/HATEEER/HATEEER/main/assets/sonnor-project.svg" alt="Sonnor mobile music platform" width="100%" />
+</p>
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+# Sonnor
 
-## Get started
+Sonnor is a mobile platform for artists, listeners and music communities. It brings publishing, discovery, playback, social interaction and moderation into a single product built around a focused mobile experience.
 
-1. Install dependencies
+> Active product development. The repository reflects the current application architecture and feature work.
 
-   ```bash
-   npm install
-   ```
+## Product capabilities
 
-2. Start the app
+- Account creation, email verification, recovery and onboarding.
+- Artist and listener profiles with editable identity and social relationships.
+- Track submission, ownership review, releases and scheduled publishing.
+- Audio playback, media controls, library management and discovery.
+- Posts, likes, follows and shared media experiences.
+- Event requests, banners and time-based content.
+- Reports, verification requests and administrative moderation tools.
+- In-app notifications driven by trusted backend events.
 
-   ```bash
-   npx expo start
-   ```
+## Technology
 
-In the output, you'll find options to open the app in a
+| Layer | Technology |
+| --- | --- |
+| Mobile | React Native 0.81, Expo 54, Expo Router 6 |
+| Language | TypeScript 5.9, React 19 |
+| Data | Firebase Authentication, Firestore and Storage |
+| Backend | Cloud Functions for Firebase, Node.js 20 |
+| Native | Swift module for iOS remote media controls |
+| Motion and media | Reanimated, Expo Audio, Expo Video and Expo Image |
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Architecture
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```text
+app/                         Route-based product surfaces
+  auth/                      Authentication and recovery
+  onboarding/                Profile creation
+  main/                      Home, search, library and profile
+  admin/                     Moderation and operations
+components/                  Shared interaction components
+context/                     Playback state and coordination
+firebase/                    Typed clients, paths and mutations
+functions/src/               Trusted backend workflows
+modules/sonnor-remote-controls/
+                              Native iOS media integration
+utils/                       Media, upload and responsive helpers
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+The client owns presentation and immediate interaction. Firebase clients centralize data access, while privileged operations, scheduled publishing, moderation decisions and transactional notifications remain in Cloud Functions.
 
-## Learn more
+## Local development
 
-To learn more about developing your project with Expo, look at the following resources:
+### Requirements
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+- Node.js 20 or newer
+- npm
+- Expo development environment
+- A Firebase project when running a separate backend
 
-## Join the community
+### Application
 
-Join our community of developers creating universal apps.
+```bash
+npm install
+npx expo start
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Useful platform commands:
+
+```bash
+npm run android
+npm run ios
+npm run web
+npm run lint
+```
+
+### Cloud Functions
+
+```bash
+cd functions
+npm install
+npm run build
+```
+
+Email workflows require the Firebase secrets used by the functions package. Use your own Firebase configuration and credentials when developing a fork.
+
+## Data and security
+
+Firestore and Storage rules are versioned with the repository. Changes to collections, permissions or indexes should be reviewed together because they form one data contract.
+
+```bash
+firebase emulators:start
+firebase deploy --only firestore:rules,firestore:indexes,storage
+```
+
+## Project status
+
+Sonnor is under active development. Product behavior, schemas and operational workflows may change as the application moves toward release.
